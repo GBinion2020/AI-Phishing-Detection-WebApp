@@ -7,10 +7,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
 
 
 def _stage_status(error_count: int, warn_count: int = 0) -> str:
@@ -19,7 +17,6 @@ def _stage_status(error_count: int, warn_count: int = 0) -> str:
     if warn_count > 0:
         return "warning"
     return "ok"
-
 
 
 def _count_signal_values(signals_doc: dict[str, Any]) -> dict[str, int]:
@@ -31,7 +28,6 @@ def _count_signal_values(signals_doc: dict[str, Any]) -> dict[str, int]:
     return counts
 
 
-
 def build_audit_chain(
     *,
     eml_path: str,
@@ -39,8 +35,7 @@ def build_audit_chain(
     baseline_signals: dict[str, Any],
     semantic_doc: dict[str, Any],
     baseline_score: dict[str, Any],
-    candidates_doc: dict[str, Any],
-    plan_doc: dict[str, Any] | None,
+    enrichment_plan: dict[str, Any],
     result: dict[str, Any],
 ) -> dict[str, Any]:
     sem_notes = str(semantic_doc.get("notes", ""))
@@ -54,24 +49,27 @@ def build_audit_chain(
         status_counts: dict[str, int] = {}
         for ev in it.get("evidence", []):
             res = ev.get("result") or {}
-            src = res.get("source", "unknown")
+            src = str(res.get("source", "unknown"))
             src_counts[src] = src_counts.get(src, 0) + 1
             out = res.get("output") or {}
-            st = out.get("status", "unknown")
+            if isinstance(out, dict):
+                st = str(out.get("status", "unknown"))
+            else:
+                st = str(res.get("status", "unknown"))
             status_counts[st] = status_counts.get(st, 0) + 1
             if st == "error":
                 tool_errors.append(
                     {
-                        "playbook_id": it.get("playbook_id"),
+                        "tool_alias": it.get("tool_alias"),
                         "tool_id": ev.get("tool_id"),
-                        "reason": out.get("reason", ""),
+                        "reason": (out.get("reason", "") if isinstance(out, dict) else ""),
                     }
                 )
 
         iteration_rows.append(
             {
                 "index": it.get("index"),
-                "playbook_id": it.get("playbook_id"),
+                "tool_alias": it.get("tool_alias"),
                 "tool_calls_used": it.get("tool_calls_used"),
                 "evidence_count": it.get("evidence_count"),
                 "source_counts": src_counts,
@@ -120,23 +118,16 @@ def build_audit_chain(
             },
         },
         {
-            "name": "playbook_selection",
+            "name": "deterministic_enrichment_plan",
             "status": _stage_status(0, 0),
             "details": {
-                "candidate_count": candidates_doc.get("selected_playbook_count"),
-                "candidate_ids": [p.get("id") for p in candidates_doc.get("selected_playbooks", [])],
+                "tool_count": len(enrichment_plan.get("tool_order", [])),
+                "tool_order": enrichment_plan.get("tool_order", []),
+                "notes": enrichment_plan.get("notes", []),
             },
         },
         {
-            "name": "investigation_plan",
-            "status": _stage_status(0, 1 if plan_doc and any("fallback" in str(x).lower() for x in plan_doc.get("why", [])) else 0),
-            "details": {
-                "playbook_order": (plan_doc or {}).get("playbook_order", []),
-                "why": (plan_doc or {}).get("why", []),
-            },
-        },
-        {
-            "name": "playbook_execution_loop",
+            "name": "deterministic_enrichment_loop",
             "status": _stage_status(len(tool_errors), 0),
             "details": {
                 "iteration_count": len(iteration_rows),
@@ -166,11 +157,11 @@ def build_audit_chain(
             "llm_final_verdict_control": False,
             "deterministic_verdict_engine": True,
             "prompt_injection_system_guard": True,
+            "playbooks_deprecated": True,
         },
         "stages": stages,
         "errors": tool_errors,
     }
-
 
 
 def to_markdown(audit: dict[str, Any]) -> str:
@@ -194,6 +185,6 @@ def to_markdown(audit: dict[str, Any]) -> str:
         lines.append("- none")
     else:
         for e in errs[:30]:
-            lines.append(f"- `{e.get('playbook_id')}` `{e.get('tool_id')}`: {e.get('reason')}")
+            lines.append(f"- `{e.get('tool_alias')}` `{e.get('tool_id')}`: {e.get('reason')}")
 
     return "\n".join(lines) + "\n"

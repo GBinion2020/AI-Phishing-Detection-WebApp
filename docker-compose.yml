@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  phish-triage-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: phish-triage-web
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      INVESTIGATION_MODE: ${INVESTIGATION_MODE:-mock}
+      WEBUI_MAX_UPLOAD_MB: ${WEBUI_MAX_UPLOAD_MB:-30}
+    volumes:
+      - ./webui/data:/app/webui/data
+    restart: unless-stopped

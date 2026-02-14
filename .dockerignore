@@ -1,0 +1,11 @@
+.git
+.gitignore
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+Sample_Emails/Case_Run_*
+webui/data/
+webui/frontend/node_modules/
+webui/frontend/dist/

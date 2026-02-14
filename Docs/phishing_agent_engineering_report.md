@@ -1,5 +1,14 @@
 # AI Phishing Triage Agent — Engineering Implementation Report (CLI → API/MCP)
 
+> **Status (February 14, 2026): Historical design document.**  
+> This file contains the earlier playbook/planner architecture and is kept for reference.  
+> It does **not** represent the active runtime path.
+>
+> Use these as the current sources of truth:
+> - `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/README.md`
+> - `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/investigation/investigation_agent_pipeline.md`
+> - `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/webui/local_webui_pipeline.md`
+
 > This document turns the baseline workflow (Normalize → LLM Signals → Playbooks → Investigation Agent → Verdict Core → LLM Analyst → CLI output) into a production-grade, agentic architecture and implementation plan.  
 > Baseline reference stages: normalization/envelope, LLM signal generation + playbook assignment, investigation agent using MCP tools with deterministic confidence scoring, verdict core, strict LLM analyst, CLI outputs. (See PDF lines L11–L108.)
 

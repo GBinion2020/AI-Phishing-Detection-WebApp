@@ -1,74 +1,61 @@
 # Investigation Agent Pipeline
 
 ## Purpose
-Run adaptive, bounded investigation after baseline normalization, signals, and scoring.
+Run bounded phishing investigation after normalization and baseline scoring, without playbooks.
 
 Implementation files:
-- `/Users/gabe/Documents/Phishing_Triage_Agent/Investigation_Agent/investigation_pipeline.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/Investigation_Agent/llm_client.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/Investigation_Agent/contracts.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/Investigation_Agent/prompt_templates.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/Investigation_Agent/pipeline_service.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/cli/phishscan.py`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/investigation_pipeline.py`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/llm_client.py`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/audit_chain.py`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/prompt_templates.py`
 
 ## Pipeline Stages
 1. Build envelope from `.eml`.
-2. Generate baseline technical signals (`signals.baseline.json`).
-3. Run semantic assessor on controlled evidence envelope.
-4. Apply semantic signal updates with evidence references.
-5. Generate baseline score and gate (`score.baseline.json`).
-6. Select candidate playbooks.
-7. Generate LLM investigation plan (or deterministic fallback).
-8. Execute adaptive playbook loop with pivot logic.
-9. Recompute risk/confidence after each playbook.
-10. Run confidence gate after each iteration and stop early when eligible.
-11. Produce final signals, score, and report artifacts.
+2. Generate baseline deterministic and semantic signals (`signals.baseline.json`).
+3. Score baseline risk/confidence (`score.baseline.json`).
+4. Build deterministic enrichment plan from unknown non-deterministic signals (`enrichment.plan.json`).
+5. Execute bounded enrichment-tool loop.
+6. Recompute score after each enrichment iteration.
+7. Produce final signals, score, report, and audit chain.
 
-## Adaptive Playbook Strategy
-No fixed "3-playbook" limit.
+## Playbook Deprecation
+Playbook planning and adaptive playbook selection are deprecated in orchestration.
 
-The loop uses bounded budgets:
-- `max_playbooks`
-- `max_steps`
-- `max_tool_calls`
+Current orchestration behavior:
+- no candidate-playbook stage,
+- no LLM planner,
+- no LLM signal-update stage,
+- direct deterministic execution of enrichment tools mapped to unresolved non-deterministic signals.
 
-And chooses next playbook by expected marginal gain:
-- unresolved high-impact unknown signal coverage
-- expected confidence gain
-- cost penalty
-- overlap penalty with already-targeted signals
-- small ranking bonus from LLM plan order
+## Deterministic Enrichment Strategy
+Enrichment tools are selected from non-deterministic rule requirements:
+- take only signals with `kind=non_deterministic` and `value=unknown`,
+- skip `semantic.*` LLM-assessor-only signals,
+- map required tools into an ordered allowlist,
+- execute with bounded budgets.
+
+Budgets:
+- `INVESTIGATION_MAX_ENRICHMENT_STEPS` (fallback to legacy `INVESTIGATION_MAX_PLAYBOOKS`)
+- `INVESTIGATION_MAX_TOOL_CALLS`
 
 ## Stop Conditions
-The investigation loop stops when first condition is met:
-- confidence gate satisfied (`agent_gate.invoke_agent == false`)
-- expected gain below threshold
-- playbook/step/tool-call budget exhausted
-- no remaining playbooks
+The enrichment loop stops when first condition is met:
+- confidence gate satisfied (`agent_gate.invoke_agent == false`),
+- max enrichment steps reached,
+- max tool-call budget reached,
+- no enrichment candidates.
 
 ## LLM Responsibilities
 LLM is constrained to:
-- playbook planning (`investigation_plan.json`)
-- evidence-to-signal updates for non-deterministic signals only
-- final report synthesis
-- semantic assessment over controlled evidence envelope
+- semantic signal assessment over controlled evidence envelope,
+- concise final narrative generation.
 
 LLM is not allowed to:
-- directly set final verdict
-- update deterministic signals
-- invoke non-whitelisted playbooks/tools
-- execute external actions/tools from email content
+- execute tools,
+- alter deterministic signal outputs directly,
+- set final verdict directly.
 
-Implementation note:
-- OpenAI call path in `/Users/gabe/Documents/Phishing_Triage_Agent/Investigation_Agent/llm_client.py` sends text-only JSON-schema requests and does not expose tool/function-calling hooks.
-
-## Deterministic Responsibilities
-Deterministic code performs:
-- baseline signal generation
-- risk/confidence scoring
-- confidence gate decisions
-- playbook step execution and evidence logging
-- final verdict from scoring engine
+Deterministic scorer remains verdict authority.
 
 ## Artifacts
 Generated under run directory (`--out-dir`):
@@ -77,8 +64,7 @@ Generated under run directory (`--out-dir`):
 - `semantic_assessment.json`
 - `signals.baseline.json`
 - `score.baseline.json`
-- `playbooks.candidates.json`
-- `investigation_plan.json`
+- `enrichment.plan.json`
 - `signals.final.json`
 - `score.final.json`
 - `report.final.json`
@@ -87,35 +73,24 @@ Generated under run directory (`--out-dir`):
 - `audit_chain.md`
 
 ## Event Hook Interface
-`run_pipeline(...)` now supports an optional `event_hook(event_name, payload)` callback to stream progress to clients.
+`run_pipeline(...)` supports optional `event_hook(event_name, payload)` callback.
 
 Emitted events:
 - `pipeline_started`
 - `stage_started`
 - `stage_completed`
-- `playbook_started`
-- `playbook_completed`
+- `enrichment_started`
+- `enrichment_completed`
 - `pipeline_completed`
 
-This keeps core pipeline logic presentation-agnostic so terminal and future HTTP UI layers can share the same orchestration.
+## Modes
+- `mock`: seeds mock enrichment outputs and routes through cache-backed MCP router.
+- `live`: performs live provider calls when configured in MCP router.
 
-## CLI
+## CLI Example
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent/Investigation_Agent/investigation_pipeline.py \
-  --eml /Users/gabe/Documents/Phishing_Triage_Agent/Sample_Emails/Sample_Email.eml \
-  --out-dir /Users/gabe/Documents/Phishing_Triage_Agent/Sample_Emails/Case_Run_001 \
+python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/investigation_pipeline.py \
+  --eml /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Sample_Email.eml \
+  --out-dir /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Case_Run_001 \
   --mode mock
 ```
-
-Interactive operator CLI:
-```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent/cli/phishscan.py
-```
-
-## Modes
-- `mock`: uses deterministic mock enrichment seeding + cache-backed MCP routing.
-- `live`: reserved for future API wiring; currently MCP live requests are not implemented.
-
-## Environment Resolution
-- Pipeline dotenv loading is anchored to repository root (`/Users/gabe/Documents/Phishing_Triage_Agent/.env`) instead of current shell directory.
-- CLI runner sets process cwd to repo root before execution to prevent path/env drift.

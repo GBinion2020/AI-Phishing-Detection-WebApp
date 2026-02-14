@@ -23,9 +23,7 @@ STAGE_LABELS = {
     "load_configs": "Load configuration",
     "normalize_envelope": "Normalize envelope",
     "baseline_scoring": "Baseline signals and score",
-    "select_playbooks": "Playbook selection",
-    "build_plan": "Investigation plan",
-    "adaptive_investigation": "Adaptive investigation",
+    "enrich_signals": "Deterministic enrichment",
     "final_report": "Final report",
 }
 
@@ -74,20 +72,17 @@ class CLIView:
                     f"risk={payload.get('risk_score')} confidence={payload.get('confidence_score')} "
                     f"verdict={payload.get('verdict')} invoke_agent={payload.get('invoke_agent')}"
                 )
-        elif event == "playbook_started":
+        elif event == "enrichment_started":
             self.print(
-                f"[PLAYBOOK] {payload.get('playbook_id')} | {payload.get('playbook_name')} "
-                f"(expected_gain={payload.get('expected_gain')})"
+                f"[ENRICH] {payload.get('tool_alias')} "
+                f"(remaining_budget={payload.get('remaining_tool_budget')})"
             )
-        elif event == "playbook_completed":
+        elif event == "enrichment_completed":
             self.print(
                 "[RESULT] "
                 f"risk={payload.get('risk_score')} confidence={payload.get('confidence_score')} "
                 f"verdict={payload.get('verdict')} tool_calls={payload.get('tool_calls_used')}"
             )
-            notes = payload.get("llm_notes")
-            if notes:
-                self.print(f"         agent_reasoning={notes}")
         elif event == "pipeline_completed":
             self.print("\n[COMPLETE] Pipeline finished")
 
@@ -99,7 +94,7 @@ class CLIView:
         self.print(f"risk_score: {summary.get('risk_score')}")
         self.print(f"confidence_score: {summary.get('confidence_score')}")
         self.print(f"stop_reason: {summary.get('stop_reason')}")
-        self.print(f"used_playbooks: {summary.get('used_playbooks')}")
+        self.print(f"used_enrichment_steps: {summary.get('used_enrichment_steps')}")
         self.print(f"artifacts_dir: {summary.get('artifacts_dir')}")
         executive = summary.get("executive_summary")
         if executive:

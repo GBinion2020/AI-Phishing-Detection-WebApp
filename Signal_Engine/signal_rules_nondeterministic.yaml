@@ -24,7 +24,9 @@
     {"id": "semantic.coercive_language", "required_tools": ["llm_semantic_assessor"]},
     {"id": "semantic.payment_diversion_intent", "required_tools": ["llm_semantic_assessor"]},
     {"id": "semantic.impersonation_narrative", "required_tools": ["llm_semantic_assessor"]},
+    {"id": "semantic.sender_name_deceptive", "required_tools": ["llm_semantic_assessor"]},
     {"id": "semantic.body_url_intent_mismatch", "required_tools": ["llm_semantic_assessor"]},
+    {"id": "semantic.url_subject_context_mismatch", "required_tools": ["llm_semantic_assessor"]},
     {"id": "semantic.social_engineering_intent", "required_tools": ["llm_semantic_assessor"]},
     {"id": "semantic.prompt_injection_attempt", "required_tools": ["llm_semantic_assessor"]}
   ]

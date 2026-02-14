@@ -1,66 +1,52 @@
 # Command-Line Tool
 
 ## Purpose
-Provide an operator-friendly CLI wrapper for the investigation pipeline with:
-- strict `.eml` input validation,
-- real-time stage/playbook progress,
-- repeat-run workflow in one session,
-- runtime memory scrubbing between runs,
-- compatibility with future HTTP UI reuse.
+Provide an operator-friendly CLI wrapper for investigation runs with:
+- strict `.eml` validation,
+- live stage/enrichment progress,
+- repeat-run workflow,
+- runtime memory scrubbing.
 
 Implementation files:
-- `/Users/gabe/Documents/Phishing_Triage_Agent/cli/phishscan.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/Investigation_Agent/pipeline_service.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/Investigation_Agent/investigation_pipeline.py`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/cli/phishscan.py`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/pipeline_service.py`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/investigation_pipeline.py`
 
 ## Runtime Flow
-1. Prompt operator for file path (or accept `--eml` in one-shot mode).
-2. Validate path exists and extension is exactly `.eml`.
-3. Launch pipeline via `PipelineService.execute(...)`.
-4. Stream pipeline events to CLI display:
+1. Accept `.eml` path (interactive or `--eml`).
+2. Validate file and extension.
+3. Execute pipeline via `PipelineService.execute(...)`.
+4. Stream events:
    - stage started/completed,
-   - playbook started/completed,
-   - intermediate score/confidence updates.
-5. Print final structured summary including analyst explanation.
-6. Scrub in-process runtime state before next run.
-7. Optionally delete artifacts with `--scrub-artifacts`.
+   - enrichment started/completed,
+   - score/confidence updates.
+5. Print final summary.
+6. Scrub in-memory runtime state.
+7. Optional artifact deletion with `--scrub-artifacts`.
 
-## Event Model for Reuse
-`run_pipeline(...)` now accepts `event_hook(event_name, payload)`.
-
-Current event names:
+## Event Model
+`run_pipeline(...)` emits:
 - `pipeline_started`
 - `stage_started`
 - `stage_completed`
-- `playbook_started`
-- `playbook_completed`
+- `enrichment_started`
+- `enrichment_completed`
 - `pipeline_completed`
 
-This keeps the orchestration decoupled from presentation so the same pipeline can back:
-- terminal UX,
-- HTTP streaming status endpoints,
-- future GUI/websocket updates.
-
 ## Commands
-Interactive mode:
+Interactive:
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent/cli/phishscan.py
+python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/cli/phishscan.py
 ```
 
-One-shot mode:
+One-shot:
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent/cli/phishscan.py \
+python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/cli/phishscan.py \
   --eml /absolute/path/to/email.eml \
   --mode live
 ```
 
-Scrub generated run artifacts from disk after each run:
+Scrub artifacts:
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent/cli/phishscan.py --scrub-artifacts
+python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/cli/phishscan.py --scrub-artifacts
 ```
-
-## Notes
-- `--mode mock` and `--mode live` are both supported by the CLI and passed through to the pipeline.
-- Runtime scrubbing clears Python in-memory objects between runs; `--scrub-artifacts` controls whether output files are retained.
-- The CLI now forces process working directory to repo root, so `.env` and relative paths resolve consistently even when invoked from `/cli`.
-- Optional org ownership behavior can be configured via `ORG_TRUSTED_DOMAINS=example.com,subsidiary.org`; if not set, domain-ownership enrichment is deferred instead of defaulting to suspicious.

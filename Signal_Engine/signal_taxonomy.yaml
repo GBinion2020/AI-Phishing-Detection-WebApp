@@ -75,7 +75,9 @@
     {"id": "semantic.coercive_language", "category": "semantic", "kind": "non_deterministic"},
     {"id": "semantic.payment_diversion_intent", "category": "semantic", "kind": "non_deterministic"},
     {"id": "semantic.impersonation_narrative", "category": "semantic", "kind": "non_deterministic"},
+    {"id": "semantic.sender_name_deceptive", "category": "semantic", "kind": "non_deterministic"},
     {"id": "semantic.body_url_intent_mismatch", "category": "semantic", "kind": "non_deterministic"},
+    {"id": "semantic.url_subject_context_mismatch", "category": "semantic", "kind": "non_deterministic"},
     {"id": "semantic.social_engineering_intent", "category": "semantic", "kind": "non_deterministic"},
     {"id": "semantic.prompt_injection_attempt", "category": "semantic", "kind": "non_deterministic"}
   ]

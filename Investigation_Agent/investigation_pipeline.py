@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""End-to-end phishing investigation pipeline with adaptive playbook execution.
+"""End-to-end phishing investigation pipeline with deterministic enrichment orchestration.
 
 Pipeline:
 1) Ingest and normalize envelope
-2) Baseline signals and scoring
-3) Candidate playbook selection
-4) LLM investigation plan (with deterministic fallback)
-5) Adaptive playbook loop with confidence gate and pivot
-6) Final deterministic score + analyst report
+2) Baseline deterministic + semantic signals and score
+3) Deterministic enrichment tool plan from unknown non-deterministic signals
+4) Bounded enrichment loop (no playbooks)
+5) Final deterministic score + analyst report
 """
 
 from __future__ import annotations
@@ -36,29 +35,17 @@ from Signal_Engine.semantic_signal_assessor import (
     semantic_assessments_to_updates,
 )
 from Scoring_Engine.scoring_engine import score_signals
-from Playbooks.playbook_selector import select_playbooks
 from MCP_Adapters.ioc_cache import IOCCache
 from MCP_Adapters.mcp_router import route_tool_call, seed_cache
 from MCP_Adapters.mock_enrichment import synthesize_mock_output
 
-from Investigation_Agent.contracts import (
-    PLAN_SCHEMA,
-    REPORT_SCHEMA,
-    SIGNAL_UPDATE_SCHEMA,
-    validate_plan,
-    validate_report,
-    validate_signal_updates,
-)
+from Investigation_Agent.contracts import REPORT_SCHEMA, validate_report
 from Investigation_Agent.audit_chain import build_audit_chain, to_markdown
-from Investigation_Agent.env_utils import env_float, env_int, load_dotenv
+from Investigation_Agent.env_utils import env_int, load_dotenv
 from Investigation_Agent.llm_client import LLMClient
 from Investigation_Agent.prompt_templates import (
-    PLANNER_SYSTEM_PROMPT,
     REPORT_SYSTEM_PROMPT,
-    SIGNAL_UPDATE_SYSTEM_PROMPT,
-    planner_user_prompt,
     report_user_prompt,
-    signal_update_user_prompt,
 )
 
 
@@ -106,17 +93,36 @@ TOOL_ALIAS_TO_SIGNAL_IDS: dict[str, list[str]] = {
     "cdn_fronting_detector": ["evasion.cdn_abuse_detected"],
 }
 
+ENRICHMENT_ALIAS_PRIORITY = [
+    "url_reputation",
+    "ip_reputation",
+    "hash_intel_lookup",
+    "whois_domain_age",
+    "brand_lookalike_detector",
+    "url_redirect_resolver",
+    "url_detonation",
+    "dns_txt_lookup",
+    "dns_mx_lookup",
+    "mx_reputation",
+    "hosting_provider_intel",
+    "attachment_sandbox",
+    "campaign_similarity",
+    "nlp_anomaly_model",
+    "campaign_clustering",
+    "mailbox_history",
+    "dns_history",
+    "cdn_fronting_detector",
+    "org_domain_inventory",
+]
+
 
 @dataclass
 class Budget:
-    max_playbooks: int
-    max_steps: int
+    max_enrichment_steps: int
     max_tool_calls: int
-    min_expected_gain: float
 
 
 EventHook = Callable[[str, dict[str, Any]], None]
-
 
 
 def _now_iso() -> str:
@@ -133,7 +139,6 @@ def _emit(event_hook: EventHook | None, event: str, payload: dict[str, Any]) -> 
         return
 
 
-
 def _load_json_or_yaml(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
     try:
@@ -148,7 +153,6 @@ def _load_json_or_yaml(path: Path) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError(f"Expected mapping in {path}")
     return parsed
-
 
 
 def _extract_primary_domain(envelope: dict[str, Any]) -> str | None:
@@ -170,10 +174,8 @@ def _configured_org_domains() -> set[str]:
     return values
 
 
-
 def _extract_urls(envelope: dict[str, Any]) -> list[str]:
     return [u.get("normalized") for u in envelope.get("entities", {}).get("urls", []) if u.get("normalized")]
-
 
 
 def _extract_domains(envelope: dict[str, Any]) -> list[str]:
@@ -184,10 +186,8 @@ def _extract_domains(envelope: dict[str, Any]) -> list[str]:
     return out
 
 
-
 def _extract_ips(envelope: dict[str, Any]) -> list[str]:
     return [i.get("ip") for i in envelope.get("entities", {}).get("ips", []) if i.get("ip")]
-
 
 
 def _extract_hashes(envelope: dict[str, Any]) -> list[str]:
@@ -199,40 +199,25 @@ def _extract_hashes(envelope: dict[str, Any]) -> list[str]:
     return hashes
 
 
-
-def _non_deterministic_signal_ids(signals_doc: dict[str, Any]) -> set[str]:
-    return {
-        sid
-        for sid, payload in signals_doc.get("signals", {}).items()
-        if payload.get("kind") == "non_deterministic"
-    }
-
-
-
-def _all_signal_ids(signals_doc: dict[str, Any]) -> set[str]:
-    return set(signals_doc.get("signals", {}).keys())
-
-
-
-def _high_impact_unknown(signals_doc: dict[str, Any], scoring_cfg: dict[str, Any]) -> set[str]:
-    high = set(scoring_cfg.get("risk", {}).get("high_impact_signals", []))
-    return {
-        sid
-        for sid, payload in signals_doc.get("signals", {}).items()
-        if sid in high and payload.get("value") == "unknown"
-    }
-
-
-
 def _build_tool_payloads(tool_alias: str, envelope: dict[str, Any]) -> list[dict[str, str]]:
     urls = _extract_urls(envelope)
     domains = _extract_domains(envelope)
     ips = _extract_ips(envelope)
     hashes = _extract_hashes(envelope)
 
-    if tool_alias in {"url_reputation", "url_detonation"}:
+    if tool_alias in {"url_reputation", "url_detonation", "url_redirect_resolver"}:
         return [{"ioc_type": "url", "value": u} for u in urls[:3]]
-    if tool_alias in {"whois_domain_age", "brand_lookalike_detector", "dns_txt_lookup", "dns_mx_lookup", "dns_history", "cdn_fronting_detector", "hosting_provider_intel", "mx_reputation"}:
+    if tool_alias in {
+        "whois_domain_age",
+        "brand_lookalike_detector",
+        "dns_txt_lookup",
+        "dns_mx_lookup",
+        "dns_history",
+        "cdn_fronting_detector",
+        "hosting_provider_intel",
+        "mx_reputation",
+        "org_domain_inventory",
+    }:
         return [{"ioc_type": "domain", "value": d} for d in domains[:3]]
     if tool_alias in {"ip_reputation"}:
         return [{"ioc_type": "ip", "value": ip} for ip in ips[:3]]
@@ -243,7 +228,6 @@ def _build_tool_payloads(tool_alias: str, envelope: dict[str, Any]) -> list[dict
     if domains:
         return [{"ioc_type": "domain", "value": domains[0]}]
     return []
-
 
 
 def _execute_internal_tool(tool_alias: str, payload: dict[str, Any], envelope: dict[str, Any]) -> dict[str, Any]:
@@ -317,7 +301,6 @@ def _execute_internal_tool(tool_alias: str, payload: dict[str, Any], envelope: d
         return {"status": "ok", "is_free_hosting": free, "is_bulletproof": bulletproof, "confidence": 0.5}
 
     return {"status": "deferred", "confidence": 0.0}
-
 
 
 def _map_tool_result_to_signal_updates(
@@ -455,7 +438,6 @@ def _map_tool_result_to_signal_updates(
     return updates
 
 
-
 def _dedupe_updates(updates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
     rank = {"true": 3, "false": 2, "unknown": 1}
@@ -472,7 +454,6 @@ def _dedupe_updates(updates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(latest.values())
 
 
-
 def _apply_signal_updates(signals_doc: dict[str, Any], updates: list[dict[str, Any]]) -> None:
     for up in updates:
         sid = up["signal_id"]
@@ -484,124 +465,6 @@ def _apply_signal_updates(signals_doc: dict[str, Any], updates: list[dict[str, A
         payload["value"] = up["value"]
         payload["evidence"] = up["evidence"]
         payload["rationale"] = up["rationale"]
-
-
-
-def _fallback_plan(candidate_playbooks: list[dict[str, Any]], max_playbooks: int) -> dict[str, Any]:
-    ordered = sorted(candidate_playbooks, key=lambda x: x.get("selection_score", 0), reverse=True)
-    picked = ordered[:max_playbooks]
-    return {
-        "playbook_order": [p.get("id") for p in picked],
-        "why": ["Fallback deterministic ranking by selection_score"],
-        "expected_signal_lift": [],
-        "stop_conditions": [
-            "stop when confidence gate passes",
-            "stop when expected gain too low",
-            "stop on budget exhaustion",
-        ],
-    }
-
-
-
-def _expected_playbook_gain(
-    playbook: dict[str, Any],
-    signals_doc: dict[str, Any],
-    high_impact_unknown: set[str],
-    executed_target_signals: set[str],
-) -> tuple[float, float, float]:
-    target_signals: set[str] = set()
-    total_cost = 0.0
-    for step in playbook.get("steps", []):
-        alias = step.get("tool")
-        total_cost += float(step.get("cost", 1.0))
-        for sig in TOOL_ALIAS_TO_SIGNAL_IDS.get(alias, []):
-            target_signals.add(sig)
-
-    unknown_targets = {
-        sig
-        for sig in target_signals
-        if sig in signals_doc.get("signals", {})
-        and signals_doc["signals"][sig].get("value") == "unknown"
-    }
-
-    coverage_high = len(high_impact_unknown.intersection(unknown_targets))
-    overlap = len(target_signals.intersection(executed_target_signals))
-    expected_gain = coverage_high * 0.20 + len(unknown_targets) * 0.05
-    score = (expected_gain / (1.0 + total_cost)) + (float(playbook.get("priority", 0)) / 300.0) - (overlap * 0.03)
-    return score, expected_gain, total_cost
-
-
-
-def _choose_next_playbook(
-    remaining: list[dict[str, Any]],
-    signals_doc: dict[str, Any],
-    scoring_cfg: dict[str, Any],
-    executed_target_signals: set[str],
-    llm_rank_order: list[str],
-) -> tuple[dict[str, Any] | None, float]:
-    if not remaining:
-        return None, 0.0
-
-    high_unknown = _high_impact_unknown(signals_doc, scoring_cfg)
-    rank_bonus = {pb_id: (len(llm_rank_order) - idx) * 0.01 for idx, pb_id in enumerate(llm_rank_order)}
-
-    ranked: list[tuple[float, float, dict[str, Any]]] = []
-    for pb in remaining:
-        score, gain, _cost = _expected_playbook_gain(pb, signals_doc, high_unknown, executed_target_signals)
-        score += rank_bonus.get(pb.get("id"), 0.0)
-        ranked.append((score, gain, pb))
-
-    ranked.sort(key=lambda x: x[0], reverse=True)
-    best_score, best_gain, best_pb = ranked[0]
-    _ = best_score
-    return best_pb, best_gain
-
-
-
-def _llm_plan(
-    llm: LLMClient,
-    envelope: dict[str, Any],
-    signals_doc: dict[str, Any],
-    score_doc: dict[str, Any],
-    candidates: list[dict[str, Any]],
-    max_playbooks: int,
-) -> dict[str, Any]:
-    if not llm.enabled:
-        return _fallback_plan(candidates, max_playbooks)
-
-    user_prompt = planner_user_prompt(envelope, signals_doc, score_doc, candidates, max_playbooks)
-    out = llm.call_json(
-        system_prompt=PLANNER_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        json_schema=PLAN_SCHEMA,
-        schema_name="investigation_plan",
-        temperature=0.0,
-    )
-    validate_plan(out, {p.get("id") for p in candidates}, max_playbooks)
-    return out
-
-
-
-def _llm_signal_updates(
-    llm: LLMClient,
-    signals_doc: dict[str, Any],
-    playbook: dict[str, Any],
-    evidence: list[dict[str, Any]],
-) -> dict[str, Any]:
-    if not llm.enabled:
-        return {"updates": [], "notes": "LLM disabled; deterministic update path used"}
-
-    user_prompt = signal_update_user_prompt(signals_doc, playbook, evidence)
-    out = llm.call_json(
-        system_prompt=SIGNAL_UPDATE_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        json_schema=SIGNAL_UPDATE_SCHEMA,
-        schema_name="signal_updates",
-        temperature=0.0,
-    )
-    validate_signal_updates(out, _all_signal_ids(signals_doc), _non_deterministic_signal_ids(signals_doc))
-    return out
-
 
 
 def _llm_report(
@@ -649,9 +512,8 @@ def _llm_report(
         return _fallback_report(f"LLM report fallback due to error: {exc}")
 
 
-
-def _execute_playbook(
-    playbook: dict[str, Any],
+def _execute_enrichment_tool(
+    tool_alias: str,
     envelope: dict[str, Any],
     registry: dict[str, Any],
     cache: IOCCache,
@@ -664,62 +526,98 @@ def _execute_playbook(
     tool_calls_used = 0
     ev_idx = evidence_counter_start
 
-    for step in playbook.get("steps", []):
-        tool_alias = step.get("tool")
-        payloads = _build_tool_payloads(tool_alias, envelope)
-        if not payloads:
-            continue
+    payloads = _build_tool_payloads(tool_alias, envelope)
+    if not payloads:
+        return evidence, updates, tool_calls_used
 
-        # Limit fanout to keep loop bounded.
-        payloads = payloads[:2]
+    payloads = payloads[:3]
 
-        for payload in payloads:
-            if tool_calls_used >= tool_call_budget_remaining:
-                break
-
-            if tool_alias in TOOL_ALIAS_TO_MCP:
-                mcp_tools = TOOL_ALIAS_TO_MCP[tool_alias]
-                for mcp_tool in mcp_tools:
-                    if tool_calls_used >= tool_call_budget_remaining:
-                        break
-
-                    if mode == "mock":
-                        mock_output = synthesize_mock_output(mcp_tool, payload)
-                        seed_cache(mcp_tool, payload, mock_output, registry, cache)
-
-                    routed = route_tool_call(mcp_tool, payload, registry, cache, live_call=(mode == "live"))
-                    ev_idx += 1
-                    evidence_id = f"ev_mcp_{ev_idx:04d}"
-                    ev = {
-                        "evidence_id": evidence_id,
-                        "tool_alias": tool_alias,
-                        "tool_id": mcp_tool,
-                        "payload": payload,
-                        "result": routed,
-                    }
-                    evidence.append(ev)
-                    updates.extend(_map_tool_result_to_signal_updates(tool_alias, payload, routed, evidence_id))
-                    tool_calls_used += 1
-            else:
-                internal = _execute_internal_tool(tool_alias, payload, envelope)
-                ev_idx += 1
-                evidence_id = f"ev_internal_{ev_idx:04d}"
-                ev = {
-                    "evidence_id": evidence_id,
-                    "tool_alias": tool_alias,
-                    "tool_id": f"internal.{tool_alias}",
-                    "payload": payload,
-                    "result": internal,
-                }
-                evidence.append(ev)
-                updates.extend(_map_tool_result_to_signal_updates(tool_alias, payload, internal, evidence_id))
-                tool_calls_used += 1
-
+    for payload in payloads:
         if tool_calls_used >= tool_call_budget_remaining:
             break
 
+        if tool_alias in TOOL_ALIAS_TO_MCP:
+            mcp_tools = TOOL_ALIAS_TO_MCP[tool_alias]
+            for mcp_tool in mcp_tools:
+                if tool_calls_used >= tool_call_budget_remaining:
+                    break
+
+                if mode == "mock":
+                    mock_output = synthesize_mock_output(mcp_tool, payload)
+                    seed_cache(mcp_tool, payload, mock_output, registry, cache)
+
+                routed = route_tool_call(mcp_tool, payload, registry, cache, live_call=(mode == "live"))
+                ev_idx += 1
+                evidence_id = f"ev_mcp_{ev_idx:04d}"
+                ev = {
+                    "evidence_id": evidence_id,
+                    "tool_alias": tool_alias,
+                    "tool_id": mcp_tool,
+                    "payload": payload,
+                    "result": routed,
+                }
+                evidence.append(ev)
+                updates.extend(_map_tool_result_to_signal_updates(tool_alias, payload, routed, evidence_id))
+                tool_calls_used += 1
+        else:
+            internal = _execute_internal_tool(tool_alias, payload, envelope)
+            ev_idx += 1
+            evidence_id = f"ev_internal_{ev_idx:04d}"
+            ev = {
+                "evidence_id": evidence_id,
+                "tool_alias": tool_alias,
+                "tool_id": f"internal.{tool_alias}",
+                "payload": payload,
+                "result": internal,
+            }
+            evidence.append(ev)
+            updates.extend(_map_tool_result_to_signal_updates(tool_alias, payload, internal, evidence_id))
+            tool_calls_used += 1
+
     return evidence, _dedupe_updates(updates), tool_calls_used
 
+
+def _build_enrichment_plan(
+    signals_doc: dict[str, Any],
+    nondet_rules: dict[str, Any],
+) -> dict[str, Any]:
+    unknown_nondet = [
+        sid
+        for sid, payload in signals_doc.get("signals", {}).items()
+        if payload.get("kind") == "non_deterministic"
+        and payload.get("value") == "unknown"
+        and not sid.startswith("semantic.")
+    ]
+
+    rule_map: dict[str, list[str]] = {}
+    for row in nondet_rules.get("non_deterministic_rules", []) or []:
+        sid = str(row.get("id") or "")
+        req = [str(x) for x in (row.get("required_tools") or []) if str(x)]
+        if sid:
+            rule_map[sid] = req
+
+    tool_set: set[str] = set()
+    for sid in unknown_nondet:
+        for alias in rule_map.get(sid, []):
+            if alias == "llm_semantic_assessor":
+                continue
+            tool_set.add(alias)
+
+    priority = {alias: idx for idx, alias in enumerate(ENRICHMENT_ALIAS_PRIORITY)}
+    ordered = sorted(tool_set, key=lambda alias: (priority.get(alias, 10_000), alias))
+
+    notes = [
+        "Deterministic enrichment plan from unknown non-deterministic signals.",
+        "Playbook planner is deprecated; tool execution is direct and bounded.",
+    ]
+    if not ordered:
+        notes.append("No enrichment tools were required after baseline scoring.")
+
+    return {
+        "tool_order": ordered,
+        "unknown_nondeterministic_signals": unknown_nondet,
+        "notes": notes,
+    }
 
 
 def run_pipeline(
@@ -740,7 +638,7 @@ def run_pipeline(
     signal_det_rules = _load_json_or_yaml(ROOT / "Signal_Engine" / "signal_rules_deterministic.yaml")
     signal_nondet_rules = _load_json_or_yaml(ROOT / "Signal_Engine" / "signal_rules_nondeterministic.yaml")
     scoring_cfg = _load_json_or_yaml(ROOT / "Scoring_Engine" / "scoring_weights.yaml")
-    playbook_cfg = _load_json_or_yaml(ROOT / "Playbooks" / "playbook_library.yaml")
+
     mcp_registry_path = Path(os.getenv("MCP_TOOL_REGISTRY", "MCP_Adapters/mcp_tool_registry.yaml"))
     if not mcp_registry_path.is_absolute():
         mcp_registry_path = ROOT / mcp_registry_path
@@ -751,10 +649,11 @@ def run_pipeline(
     cache = IOCCache(path=str(cache_abs))
 
     budget = Budget(
-        max_playbooks=env_int("INVESTIGATION_MAX_PLAYBOOKS", 5),
-        max_steps=env_int("INVESTIGATION_MAX_STEPS", 20),
+        max_enrichment_steps=env_int(
+            "INVESTIGATION_MAX_ENRICHMENT_STEPS",
+            env_int("INVESTIGATION_MAX_PLAYBOOKS", 8),
+        ),
         max_tool_calls=env_int("INVESTIGATION_MAX_TOOL_CALLS", 30),
-        min_expected_gain=env_float("INVESTIGATION_MIN_EXPECTED_GAIN", 0.04),
     )
 
     llm = LLMClient(timeout_seconds=env_int("OPENAI_TIMEOUT_SECONDS", 60))
@@ -810,199 +709,114 @@ def run_pipeline(
         },
     )
 
-    # 3) Candidate playbooks
-    _emit(event_hook, "stage_started", {"stage": "select_playbooks"})
-    candidates_doc = select_playbooks(signals_doc, playbook_cfg)
-    candidates = candidates_doc.get("selected_playbooks", [])
-    (out / "playbooks.candidates.json").write_text(json.dumps(candidates_doc, indent=2) + "\n", encoding="utf-8")
-    _emit(event_hook, "stage_completed", {"stage": "select_playbooks", "candidate_count": len(candidates)})
+    current_signals = copy.deepcopy(signals_doc)
+    current_score = copy.deepcopy(score_doc)
+    iterations: list[dict[str, Any]] = []
+    total_tool_calls = 0
 
-    if not score_doc.get("agent_gate", {}).get("invoke_agent", True):
-        _emit(event_hook, "stage_started", {"stage": "final_report"})
-        final_report = _llm_report(llm, envelope, signals_doc, score_doc, [])
-        result = {
-            "schema_version": "1.0",
-            "case_id": envelope.get("case_id"),
-            "generated_at": _now_iso(),
-            "mode": mode,
-            "agent_invoked": False,
-            "investigation_plan": None,
-            "iterations": [],
-            "final_signals": signals_doc,
-            "final_score": score_doc,
-            "final_report": final_report,
-        }
-        (out / "investigation_result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    # 3) Deterministic enrichment tool planning and execution
+    enrichment_plan = _build_enrichment_plan(current_signals, signal_nondet_rules)
+    (out / "enrichment.plan.json").write_text(json.dumps(enrichment_plan, indent=2) + "\n", encoding="utf-8")
+
+    if not current_score.get("agent_gate", {}).get("invoke_agent", True):
+        stop_reason = "risk_gate_satisfied_after_baseline"
         _emit(
             event_hook,
             "stage_completed",
             {
-                "stage": "final_report",
-                "risk_score": score_doc.get("risk_score"),
-                "confidence_score": score_doc.get("confidence_score"),
-                "verdict": score_doc.get("verdict"),
+                "stage": "enrich_signals",
+                "stop_reason": stop_reason,
+                "used_enrichment_steps": 0,
+                "used_tool_calls": 0,
             },
         )
-        _emit(
-            event_hook,
-            "pipeline_completed",
-            {
-                "case_id": result.get("case_id"),
-                "agent_invoked": False,
-                "risk_score": score_doc.get("risk_score"),
-                "confidence_score": score_doc.get("confidence_score"),
-                "verdict": score_doc.get("verdict"),
-            },
-        )
-        return result
+    else:
+        _emit(event_hook, "stage_started", {"stage": "enrich_signals"})
+        stop_reason = "enrichment_completed"
+        evidence_counter = 0
 
-    # 4) LLM plan with fallback
-    _emit(event_hook, "stage_started", {"stage": "build_plan"})
-    try:
-        plan_doc = _llm_plan(llm, envelope, signals_doc, score_doc, candidates, budget.max_playbooks)
-    except Exception as exc:
-        plan_doc = _fallback_plan(candidates, budget.max_playbooks)
-        plan_doc["why"].append(f"LLM plan fallback due to error: {exc}")
+        for tool_alias in enrichment_plan.get("tool_order", []):
+            if len(iterations) >= budget.max_enrichment_steps:
+                stop_reason = "max_enrichment_steps_reached"
+                break
+            if total_tool_calls >= budget.max_tool_calls:
+                stop_reason = "tool_call_budget_reached"
+                break
 
-    (out / "investigation_plan.json").write_text(json.dumps(plan_doc, indent=2) + "\n", encoding="utf-8")
-    _emit(
-        event_hook,
-        "stage_completed",
-        {"stage": "build_plan", "planned_playbooks": plan_doc.get("playbook_order", [])[: budget.max_playbooks]},
-    )
+            _emit(
+                event_hook,
+                "enrichment_started",
+                {
+                    "tool_alias": tool_alias,
+                    "index": len(iterations) + 1,
+                    "remaining_tool_budget": budget.max_tool_calls - total_tool_calls,
+                },
+            )
 
-    # 5) Adaptive loop
-    _emit(event_hook, "stage_started", {"stage": "adaptive_investigation"})
-    llm_rank_order = [pid for pid in plan_doc.get("playbook_order", []) if isinstance(pid, str)]
-    remaining = [pb for pb in candidates if pb.get("id") in llm_rank_order] + [pb for pb in candidates if pb.get("id") not in llm_rank_order]
+            evidence, deterministic_updates, calls_used = _execute_enrichment_tool(
+                tool_alias=tool_alias,
+                envelope=envelope,
+                registry=mcp_registry,
+                cache=cache,
+                mode=mode,
+                tool_call_budget_remaining=(budget.max_tool_calls - total_tool_calls),
+                evidence_counter_start=evidence_counter,
+            )
+            total_tool_calls += calls_used
+            evidence_counter += len(evidence)
 
-    seen_pb: set[str] = set()
-    iterations: list[dict[str, Any]] = []
-    executed_target_signals: set[str] = set()
-    total_tool_calls = 0
-    total_steps = 0
-    evidence_counter = 0
+            updates = _dedupe_updates(deterministic_updates)
+            _apply_signal_updates(current_signals, updates)
+            current_score = score_signals(current_signals, scoring_cfg)
 
-    current_signals = copy.deepcopy(signals_doc)
-    current_score = copy.deepcopy(score_doc)
-
-    while True:
-        if len(seen_pb) >= budget.max_playbooks:
-            stop_reason = "max_playbooks_reached"
-            break
-        if total_steps >= budget.max_steps:
-            stop_reason = "max_steps_reached"
-            break
-        if total_tool_calls >= budget.max_tool_calls:
-            stop_reason = "max_tool_calls_reached"
-            break
-
-        pool = [pb for pb in remaining if pb.get("id") not in seen_pb]
-        if not pool:
-            stop_reason = "no_remaining_playbooks"
-            break
-
-        next_pb, expected_gain = _choose_next_playbook(pool, current_signals, scoring_cfg, executed_target_signals, llm_rank_order)
-        if not next_pb:
-            stop_reason = "no_playbook_selected"
-            break
-        if expected_gain < budget.min_expected_gain:
-            stop_reason = "expected_gain_below_threshold"
-            break
-
-        _emit(
-            event_hook,
-            "playbook_started",
-            {
-                "playbook_id": next_pb.get("id"),
-                "playbook_name": next_pb.get("name"),
-                "expected_gain": round(expected_gain, 4),
-            },
-        )
-        seen_pb.add(next_pb["id"])
-        total_steps += len(next_pb.get("steps", []))
-
-        evidence, deterministic_updates, calls_used = _execute_playbook(
-            playbook=next_pb,
-            envelope=envelope,
-            registry=mcp_registry,
-            cache=cache,
-            mode=mode,
-            tool_call_budget_remaining=(budget.max_tool_calls - total_tool_calls),
-            evidence_counter_start=evidence_counter,
-        )
-        total_tool_calls += calls_used
-        evidence_counter += len(evidence)
-
-        # deterministic updates from tool outputs
-        updates = list(deterministic_updates)
-
-        # optional LLM updates
-        try:
-            llm_updates_doc = _llm_signal_updates(llm, current_signals, next_pb, evidence)
-            validate_signal_updates(llm_updates_doc, _all_signal_ids(current_signals), _non_deterministic_signal_ids(current_signals))
-            updates.extend(llm_updates_doc.get("updates", []))
-        except Exception as exc:
-            llm_updates_doc = {"updates": [], "notes": f"LLM signal update fallback due to error: {exc}"}
-
-        updates = _dedupe_updates(updates)
-        _apply_signal_updates(current_signals, updates)
-
-        # refresh score after this playbook
-        current_score = score_signals(current_signals, scoring_cfg)
-
-        for step in next_pb.get("steps", []):
-            alias = step.get("tool")
-            for sig in TOOL_ALIAS_TO_SIGNAL_IDS.get(alias, []):
-                executed_target_signals.add(sig)
-
-        iteration = {
-            "index": len(iterations) + 1,
-            "playbook_id": next_pb.get("id"),
-            "playbook_name": next_pb.get("name"),
-            "expected_gain": round(expected_gain, 4),
-            "tool_calls_used": calls_used,
-            "evidence_count": len(evidence),
-            "evidence": evidence,
-            "signal_updates": updates,
-            "llm_update_notes": llm_updates_doc.get("notes", ""),
-            "score_after": {
-                "risk_score": current_score.get("risk_score"),
-                "confidence_score": current_score.get("confidence_score"),
-                "verdict": current_score.get("verdict"),
-                "agent_gate": current_score.get("agent_gate"),
-            },
-        }
-        iterations.append(iteration)
-        _emit(
-            event_hook,
-            "playbook_completed",
-            {
-                "playbook_id": next_pb.get("id"),
-                "playbook_name": next_pb.get("name"),
+            iteration = {
+                "index": len(iterations) + 1,
+                "phase": "deterministic_enrichment",
+                "tool_alias": tool_alias,
                 "tool_calls_used": calls_used,
-                "risk_score": current_score.get("risk_score"),
-                "confidence_score": current_score.get("confidence_score"),
-                "verdict": current_score.get("verdict"),
-                "llm_notes": llm_updates_doc.get("notes", ""),
+                "evidence_count": len(evidence),
+                "evidence": evidence,
+                "signal_updates": updates,
+                "score_after": {
+                    "risk_score": current_score.get("risk_score"),
+                    "confidence_score": current_score.get("confidence_score"),
+                    "verdict": current_score.get("verdict"),
+                    "agent_gate": current_score.get("agent_gate"),
+                },
+            }
+            iterations.append(iteration)
+
+            _emit(
+                event_hook,
+                "enrichment_completed",
+                {
+                    "tool_alias": tool_alias,
+                    "tool_calls_used": calls_used,
+                    "risk_score": current_score.get("risk_score"),
+                    "confidence_score": current_score.get("confidence_score"),
+                    "verdict": current_score.get("verdict"),
+                },
+            )
+
+            if not current_score.get("agent_gate", {}).get("invoke_agent", True):
+                stop_reason = "confidence_gate_satisfied"
+                break
+
+        if not enrichment_plan.get("tool_order"):
+            stop_reason = "no_enrichment_candidates"
+
+        _emit(
+            event_hook,
+            "stage_completed",
+            {
+                "stage": "enrich_signals",
+                "stop_reason": stop_reason,
+                "used_enrichment_steps": len(iterations),
+                "used_tool_calls": total_tool_calls,
             },
         )
 
-        # confidence gate after each playbook
-        if not current_score.get("agent_gate", {}).get("invoke_agent", True):
-            stop_reason = "confidence_gate_satisfied"
-            break
-
-    _emit(
-        event_hook,
-        "stage_completed",
-        {
-            "stage": "adaptive_investigation",
-            "stop_reason": stop_reason,
-            "used_playbooks": len(seen_pb),
-            "used_tool_calls": total_tool_calls,
-        },
-    )
+    # 4) Final report
     _emit(event_hook, "stage_started", {"stage": "final_report"})
     final_report = _llm_report(llm, envelope, current_signals, current_score, iterations)
 
@@ -1011,17 +825,15 @@ def run_pipeline(
         "case_id": envelope.get("case_id"),
         "generated_at": _now_iso(),
         "mode": mode,
-        "agent_invoked": True,
+        "agent_invoked": bool(iterations),
         "stop_reason": stop_reason,
         "budgets": {
-            "max_playbooks": budget.max_playbooks,
-            "max_steps": budget.max_steps,
+            "max_enrichment_steps": budget.max_enrichment_steps,
             "max_tool_calls": budget.max_tool_calls,
-            "used_playbooks": len(seen_pb),
-            "used_steps": total_steps,
+            "used_enrichment_steps": len(iterations),
             "used_tool_calls": total_tool_calls,
         },
-        "investigation_plan": plan_doc,
+        "enrichment_plan": enrichment_plan,
         "iterations": iterations,
         "final_signals": current_signals,
         "final_score": current_score,
@@ -1039,12 +851,12 @@ def run_pipeline(
         baseline_signals=baseline_signals,
         semantic_doc=semantic_doc,
         baseline_score=baseline_score,
-        candidates_doc=candidates_doc,
-        plan_doc=plan_doc,
+        enrichment_plan=enrichment_plan,
         result=result,
     )
     (out / "audit_chain.json").write_text(json.dumps(audit, indent=2) + "\n", encoding="utf-8")
     (out / "audit_chain.md").write_text(to_markdown(audit), encoding="utf-8")
+
     _emit(
         event_hook,
         "stage_completed",
@@ -1065,16 +877,15 @@ def run_pipeline(
             "risk_score": current_score.get("risk_score"),
             "confidence_score": current_score.get("confidence_score"),
             "verdict": current_score.get("verdict"),
-            "used_playbooks": result.get("budgets", {}).get("used_playbooks"),
+            "used_enrichment_steps": result.get("budgets", {}).get("used_enrichment_steps"),
         },
     )
 
     return result
 
 
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run full phishing investigation pipeline with adaptive playbook loop.")
+    parser = argparse.ArgumentParser(description="Run full phishing investigation pipeline with deterministic enrichment loop.")
     parser.add_argument("--eml", required=True, help="Path to .eml input")
     parser.add_argument("--out-dir", required=True, help="Directory for generated artifacts")
     parser.add_argument("--mode", default=os.getenv("INVESTIGATION_MODE", "mock"), choices=["mock", "live"], help="Investigation mode")
@@ -1088,7 +899,7 @@ def main() -> None:
         "risk_score": result.get("final_score", {}).get("risk_score"),
         "confidence_score": result.get("final_score", {}).get("confidence_score"),
         "verdict": result.get("final_score", {}).get("verdict"),
-        "used_playbooks": result.get("budgets", {}).get("used_playbooks"),
+        "used_enrichment_steps": result.get("budgets", {}).get("used_enrichment_steps"),
     }, indent=2))
 
 

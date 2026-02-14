@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ app_name }} Local Web UI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="card app-header">
+        <div class="app-brand">
+          <div class="brand-icon" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M12 3L19 6V12.2C19 16.1 16.5 19.6 12 21C7.5 19.6 5 16.1 5 12.2V6L12 3Z"
+                stroke="currentColor"
+                stroke-width="1.8"
+              />
+            </svg>
+          </div>
+          <div>
+            <h1>Phishing Triage</h1>
+            <p>AI-Powered Email Investigation</p>
+          </div>
+        </div>
+        <button id="new-analysis-top" class="btn btn-secondary" type="button">New Analysis</button>
+      </header>
+
+      <div class="workspace">
+        <main class="main-column">
+          <section id="upload-panel" class="panel card is-active">
+            <div class="panel-title-row">
+              <div class="panel-icon" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M14 3H7a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" stroke="currentColor" stroke-width="1.8" />
+                  <path d="M14 3v5h5M9 13h6M9 17h4" stroke="currentColor" stroke-width="1.8" />
+                </svg>
+              </div>
+              <div>
+                <h2>Analyze New Email</h2>
+                <p>Drop an <code>.eml</code> file to begin investigation.</p>
+              </div>
+            </div>
+
+            <div id="dropzone" class="dropzone">
+              <div class="drop-content">
+                <div class="drop-spinner-wrap" aria-hidden="true">
+                  <div class="drop-spinner-ring"></div>
+                </div>
+                <p class="drop-title">Drop your <code>.eml</code> file here</p>
+                <p class="drop-subtitle">or browse from your computer to launch analysis</p>
+                <button id="browse-btn" class="btn btn-primary" type="button">Browse Files</button>
+                <input id="file-input" type="file" accept=".eml" hidden />
+              </div>
+            </div>
+
+            <div class="upload-footer">
+              <label for="mode-select">Investigation Mode</label>
+              <select id="mode-select">
+                <option value="mock" {% if default_mode == "mock" %}selected{% endif %}>Mock</option>
+                <option value="live" {% if default_mode == "live" %}selected{% endif %}>Live</option>
+              </select>
+              <span class="upload-limit">Upload limit: {{ max_upload_mb }}MB</span>
+            </div>
+          </section>
+
+          <section id="progress-panel" class="panel card">
+            <div class="panel-title-row">
+              <div class="panel-icon" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke="currentColor" stroke-width="1.8" />
+                  <path d="M21 3v6h-6" stroke="currentColor" stroke-width="1.8" />
+                </svg>
+              </div>
+              <div>
+                <h2>Analyzing Email</h2>
+                <p id="progress-filename">Running investigation pipeline</p>
+              </div>
+            </div>
+
+            <div class="progress-shell">
+              <div class="progress-spinner"></div>
+              <p class="progress-title">Running full investigation...</p>
+              <p class="progress-subtitle">Live stage updates from the case runtime</p>
+            </div>
+
+            <div id="stages-list" class="stage-list"></div>
+            <div id="runtime-messages" class="runtime-messages"></div>
+          </section>
+
+          <section id="report-panel" class="panel">
+            <article class="card report-hero">
+              <div class="hero-top">
+                <button id="back-to-upload-btn" class="link-btn" type="button">← Back to Upload</button>
+                <span id="report-status-badge" class="status-pill">Pending</span>
+              </div>
+
+              <div class="hero-content">
+                <div class="risk-ring-wrap">
+                  <div id="risk-ring" class="risk-ring">
+                    <div class="risk-ring-center">
+                      <span id="risk-ring-value">-</span>
+                      <small>RISK</small>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="hero-main">
+                  <h2 id="report-title">Investigation Report</h2>
+                  <div class="hero-chip-grid">
+                    <div class="meta-chip">
+                      <span class="meta-label">Subject</span>
+                      <span id="subject-meta" class="meta-value">-</span>
+                    </div>
+                    <div class="meta-chip">
+                      <span class="meta-label">Sender</span>
+                      <span id="sender-meta" class="meta-value">-</span>
+                    </div>
+                    <div class="meta-chip">
+                      <span class="meta-label">Confidence</span>
+                      <span id="confidence-meta" class="meta-value">-</span>
+                    </div>
+                    <div class="meta-chip">
+                      <span class="meta-label">Classification</span>
+                      <span id="classification-meta" class="meta-value">-</span>
+                    </div>
+                  </div>
+                  <p id="time-meta" class="hero-time">-</p>
+                  <p id="result-heading" class="result-heading">Awaiting analysis...</p>
+                </div>
+              </div>
+            </article>
+
+            <article class="card section-card">
+              <h3>AI Analysis Summary</h3>
+              <p id="analyst-summary" class="analyst-summary"></p>
+              <h4 class="section-subtitle">Key Findings</h4>
+              <ul id="key-points" class="key-findings"></ul>
+            </article>
+
+            <article class="card section-card">
+              <h3>Subject &amp; Body Analysis</h3>
+              <p id="subject-line" class="subject-line"></p>
+              <div class="analysis-actions">
+                <button id="analysis-detail-btn" class="btn btn-secondary btn-small" type="button">View Detailed Review</button>
+              </div>
+
+              <div id="subject-card" class="analysis-card level-yellow">
+                <h4>Subject Assessment</h4>
+                <p id="subject-analysis" class="analysis-copy"></p>
+              </div>
+
+              <div id="body-card" class="analysis-card level-yellow">
+                <h4>Body Assessment</h4>
+                <p id="body-analysis" class="analysis-copy"></p>
+              </div>
+
+              <pre id="text-viewer" class="text-viewer"></pre>
+            </article>
+
+            <section class="report-label-row">
+              <h3>Threat Indicator Review</h3>
+            </section>
+            <div id="indicator-cards" class="indicator-grid"></div>
+
+            <article class="card section-card">
+              <h3>Evidence Highlights</h3>
+              <ul id="ioc-list" class="ioc-list"></ul>
+            </article>
+
+            <article class="card section-card analyst-section">
+              <h3>Analyst Decision</h3>
+              <p class="section-muted">Review the AI output and record your determination.</p>
+              <div class="decision-row">
+                <span id="decision-state" class="decision-state undecided">Undecided</span>
+                <div class="decision-buttons">
+                  <button id="decision-benign" class="btn btn-secondary btn-small" type="button">Benign</button>
+                  <button id="decision-suspicious" class="btn btn-secondary btn-small" type="button">Suspicious</button>
+                  <button id="decision-escalate" class="btn btn-secondary btn-small" type="button">Escalate</button>
+                </div>
+              </div>
+              <label for="decision-note" class="decision-label">Decision note (optional)</label>
+              <textarea id="decision-note" rows="2" placeholder="Add a short analyst note..."></textarea>
+              <p id="decision-updated-at" class="queue-note"></p>
+            </article>
+          </section>
+        </main>
+
+        <aside class="queue-column card">
+          <div class="queue-header">
+            <div>
+              <h2>Case Queue</h2>
+              <p id="queue-count" class="queue-note">0 investigations</p>
+            </div>
+            <button id="refresh-cases" class="icon-btn" type="button" aria-label="Refresh queue">↻</button>
+          </div>
+          <div id="case-list" class="case-list"></div>
+        </aside>
+      </div>
+    </div>
+
+    <script>
+      window.APP_CONFIG = {
+        defaultMode: "{{ default_mode }}",
+      };
+    </script>
+
+    <div id="indicator-modal" class="indicator-modal is-hidden" aria-hidden="true">
+      <div id="indicator-modal-backdrop" class="indicator-modal-backdrop"></div>
+      <div class="indicator-modal-card" role="dialog" aria-modal="true">
+        <div class="indicator-modal-header">
+          <h3 id="indicator-modal-title">Indicator Details</h3>
+          <button id="indicator-modal-close" class="btn btn-secondary btn-small" type="button">Close</button>
+        </div>
+        <p id="indicator-modal-summary" class="queue-note"></p>
+        <div id="indicator-modal-list" class="indicator-modal-list"></div>
+      </div>
+    </div>
+
+    <div id="analysis-modal" class="indicator-modal is-hidden" aria-hidden="true">
+      <div id="analysis-modal-backdrop" class="indicator-modal-backdrop"></div>
+      <div class="indicator-modal-card" role="dialog" aria-modal="true">
+        <div class="indicator-modal-header">
+          <h3>Detailed Subject &amp; Body Review</h3>
+          <button id="analysis-modal-close" class="btn btn-secondary btn-small" type="button">Close</button>
+        </div>
+        <p id="analysis-modal-summary" class="queue-note">Suspicious and malicious excerpts with assessments.</p>
+        <div id="analysis-modal-list" class="indicator-modal-list"></div>
+      </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

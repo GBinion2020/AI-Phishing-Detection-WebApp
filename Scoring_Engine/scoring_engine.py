@@ -95,6 +95,7 @@ def score_signals(signals_doc: dict[str, Any], config: dict[str, Any]) -> dict[s
 
     high_impact = set(risk_cfg.get("high_impact_signals", []))
     risk_score = 0.0
+    semantic_true_count = 0
 
     total = len(signals)
     known = 0
@@ -137,6 +138,8 @@ def score_signals(signals_doc: dict[str, Any], config: dict[str, Any]) -> dict[s
         if value == "true":
             weight_applied = _get_signal_weight(signal_id, kind, config)
             risk_score += weight_applied
+            if signal_id.startswith("semantic."):
+                semantic_true_count += 1
             if not evidence:
                 true_without_evidence += 1
             reasons.append(
@@ -159,12 +162,6 @@ def score_signals(signals_doc: dict[str, Any], config: dict[str, Any]) -> dict[s
             }
         )
 
-    risk_score = _clamp(
-        risk_score,
-        float(risk_cfg.get("min_score", 0)),
-        float(risk_cfg.get("max_score", 100)),
-    )
-
     coverage = (known / total) if total else 0.0
     det_coverage = (det_known / det_total) if det_total else 0.0
     nondet_coverage = (nondet_known / nondet_total) if nondet_total else 0.0
@@ -178,6 +175,28 @@ def score_signals(signals_doc: dict[str, Any], config: dict[str, Any]) -> dict[s
         + float(conf_cfg.get("evidence_presence_weight", 0.1)) * evidence_coverage
         - float(conf_cfg.get("high_impact_unknown_penalty", 0.05)) * high_impact_unknown
         - float(conf_cfg.get("true_signal_without_evidence_penalty", 0.02)) * true_without_evidence
+    )
+
+    semantic_cfg = config.get("semantic_blend", {})
+    semantic_risk_boost = 0.0
+    semantic_conf_boost = 0.0
+    if bool(semantic_cfg.get("enabled", True)):
+        semantic_risk_boost = min(
+            float(semantic_cfg.get("max_risk_boost", 0.0)),
+            semantic_true_count * float(semantic_cfg.get("risk_boost_per_true_signal", 0.0)),
+        )
+        semantic_conf_boost = min(
+            float(semantic_cfg.get("max_confidence_boost", 0.0)),
+            semantic_true_count * float(semantic_cfg.get("confidence_boost_per_true_signal", 0.0)),
+        )
+
+    risk_score += semantic_risk_boost
+    confidence_score += semantic_conf_boost
+
+    risk_score = _clamp(
+        risk_score,
+        float(risk_cfg.get("min_score", 0)),
+        float(risk_cfg.get("max_score", 100)),
     )
     confidence_score = _clamp(
         confidence_score,
@@ -244,6 +263,9 @@ def score_signals(signals_doc: dict[str, Any], config: dict[str, Any]) -> dict[s
             "non_deterministic_known": nondet_known,
             "high_impact_unknown_count": high_impact_unknown,
             "true_without_evidence_count": true_without_evidence,
+            "semantic_true_count": semantic_true_count,
+            "semantic_risk_boost": round(semantic_risk_boost, 2),
+            "semantic_confidence_boost": round(semantic_conf_boost, 4),
         },
         "reasons": reasons_sorted[:15],
         "weighted_signals": weighted_rows,

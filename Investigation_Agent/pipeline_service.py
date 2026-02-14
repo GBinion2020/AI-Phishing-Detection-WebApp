@@ -30,6 +30,7 @@ class PipelineService:
 def summarize_result(result: dict[str, Any]) -> dict[str, Any]:
     final_score = result.get("final_score", {})
     final_report = result.get("final_report", {})
+    budgets = result.get("budgets") or {}
     return {
         "case_id": result.get("case_id"),
         "mode": result.get("mode"),
@@ -37,7 +38,7 @@ def summarize_result(result: dict[str, Any]) -> dict[str, Any]:
         "risk_score": final_score.get("risk_score"),
         "confidence_score": final_score.get("confidence_score"),
         "stop_reason": result.get("stop_reason", "agent_not_invoked"),
-        "used_playbooks": (result.get("budgets") or {}).get("used_playbooks", 0),
+        "used_enrichment_steps": budgets.get("used_enrichment_steps", 0),
         "executive_summary": final_report.get("executive_summary", ""),
         "artifacts_dir": result.get("artifacts_dir"),
     }

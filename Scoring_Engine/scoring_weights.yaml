@@ -11,7 +11,7 @@
       "infra": {"deterministic": 7, "non_deterministic": 11},
       "behavior": {"deterministic": 3, "non_deterministic": 8},
       "evasion": {"deterministic": 9, "non_deterministic": 12},
-      "semantic": {"deterministic": 0, "non_deterministic": 9}
+      "semantic": {"deterministic": 0, "non_deterministic": 16}
     },
     "signal_overrides": {
       "auth.dmarc_fail": {"true_weight": 20},
@@ -24,13 +24,15 @@
       "url.ip_literal_used": {"true_weight": 12},
       "content.credential_harvest_language": {"true_weight": 14},
       "content.account_suspension_threat": {"true_weight": 10},
-      "semantic.credential_theft_intent": {"true_weight": 16},
-      "semantic.coercive_language": {"true_weight": 10},
-      "semantic.payment_diversion_intent": {"true_weight": 14},
-      "semantic.impersonation_narrative": {"true_weight": 14},
-      "semantic.body_url_intent_mismatch": {"true_weight": 12},
-      "semantic.social_engineering_intent": {"true_weight": 13},
-      "semantic.prompt_injection_attempt": {"true_weight": 8},
+      "semantic.credential_theft_intent": {"true_weight": 24},
+      "semantic.coercive_language": {"true_weight": 16},
+      "semantic.payment_diversion_intent": {"true_weight": 22},
+      "semantic.impersonation_narrative": {"true_weight": 22},
+      "semantic.sender_name_deceptive": {"true_weight": 20},
+      "semantic.body_url_intent_mismatch": {"true_weight": 20},
+      "semantic.url_subject_context_mismatch": {"true_weight": 22},
+      "semantic.social_engineering_intent": {"true_weight": 19},
+      "semantic.prompt_injection_attempt": {"true_weight": 12},
       "attachment.hash_known_malicious": {"true_weight": 30},
       "attachment.sandbox_behavior_malicious": {"true_weight": 30},
       "attachment.suspicious_file_type": {"true_weight": 14},
@@ -52,6 +54,9 @@
       "semantic.credential_theft_intent",
       "semantic.payment_diversion_intent",
       "semantic.impersonation_narrative",
+      "semantic.sender_name_deceptive",
+      "semantic.body_url_intent_mismatch",
+      "semantic.url_subject_context_mismatch",
       "attachment.hash_known_malicious",
       "attachment.sandbox_behavior_malicious",
       "infra.sending_ip_reputation_bad",
@@ -74,6 +79,13 @@
     "true_signal_without_evidence_penalty": 0.03,
     "min": 0.0,
     "max": 1.0
+  },
+  "semantic_blend": {
+    "enabled": true,
+    "risk_boost_per_true_signal": 2.5,
+    "max_risk_boost": 16,
+    "confidence_boost_per_true_signal": 0.02,
+    "max_confidence_boost": 0.14
   },
   "agent_gate": {
     "auto_phish_min_risk": 85,

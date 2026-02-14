@@ -1,10 +1,10 @@
 # Audit Chain
 
 ## Purpose
-Provide full stage-by-stage traceability for each case run so failures and regressions are diagnosable.
+Provide stage-by-stage traceability for each case run so failures and regressions are diagnosable.
 
 Implementation file:
-- `/Users/gabe/Documents/Phishing_Triage_Agent/Investigation_Agent/audit_chain.py`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/audit_chain.py`
 
 ## Artifacts
 Generated per run:
@@ -17,22 +17,15 @@ Audit chain records:
 2. baseline signal generation
 3. semantic assessment stage
 4. baseline scoring stage
-5. playbook selection
-6. investigation planning
-7. playbook execution loop with per-iteration source/status counts
-8. final decision stage
+5. deterministic enrichment planning
+6. deterministic enrichment loop with per-iteration source/status counts
+7. final decision stage
 
 ## Error Mapping
 For each tool failure, audit captures:
-- playbook id
+- enrichment tool alias
 - tool id
 - provider reason
-
-This lets you identify whether failures are:
-- credential/auth issues
-- endpoint/query issues
-- provider availability issues
-- schema/normalization mapping issues
 
 ## Guardrail Attestation
 Audit includes explicit guardrail flags:
@@ -40,3 +33,4 @@ Audit includes explicit guardrail flags:
 - `llm_final_verdict_control=false`
 - `deterministic_verdict_engine=true`
 - `prompt_injection_system_guard=true`
+- `playbooks_deprecated=true`

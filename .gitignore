@@ -1,4 +1,5 @@
 .env
+.DS_Store
 __pycache__/
 /Sample_Emails/*.eml
 /Sample_Emails/*.json
@@ -7,3 +8,6 @@ __pycache__/
 /example_eml_files/*.eml
 /Uber_Eats.eml
 /MCP_Adapters/ioc_cache.json
+/webui/data/cases/
+/webui/data/uploads/
+/webui/data/*.db

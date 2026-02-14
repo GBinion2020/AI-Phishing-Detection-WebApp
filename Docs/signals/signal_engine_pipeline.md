@@ -1,123 +1,90 @@
 # Signal Engine Pipeline
 
 ## Purpose
-The signal engine converts a normalized envelope into a bounded `signals.json` object.
-
-The output is designed for:
-- deterministic scoring
-- playbook selection
-- downstream investigation routing
+Convert normalized envelope data into bounded triage signals (`true|false|unknown`) for scoring and deterministic enrichment routing.
 
 ## Inputs
 - Envelope JSON from normalization:
   - `schema_version`, `case_id`, `message_metadata`, `auth_summary`, `entities`, `mime_parts`, `attachments`, `warnings`
-- Signal registry and rule files in `/Users/gabe/Documents/Phishing_Triage_Agent/Signal_Engine`
+- Signal registry/rule files in `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine`
 - Optional external tool results for non-deterministic signals
 
 ## Configuration Files
-- `/Users/gabe/Documents/Phishing_Triage_Agent/Signal_Engine/signal_taxonomy.yaml`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/Signal_Engine/signal_rules_deterministic.yaml`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/Signal_Engine/signal_rules_nondeterministic.yaml`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/Signal_Engine/tool_requirements.yaml`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/Signal_Engine/signal_output_schema.yaml`
-
-Note: these files are JSON-compatible YAML so parsing does not require PyYAML.
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/signal_taxonomy.yaml`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/signal_rules_deterministic.yaml`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/signal_rules_nondeterministic.yaml`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/tool_requirements.yaml`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/signal_output_schema.yaml`
 
 ## Execution Stages
 1. Load taxonomy and rule mappings.
 2. Evaluate deterministic signals using envelope-only logic.
-3. Evaluate non-deterministic signals using external tool results when available.
-4. Default non-deterministic signals to `unknown` if tool data is missing.
-5. Emit strict bounded values: `true`, `false`, or `unknown`.
-6. Pass output to scoring engine and playbook selector for deterministic decisioning.
+3. Evaluate non-deterministic signals from tool results when available.
+4. Default unresolved non-deterministic signals to `unknown`.
+5. Run semantic assessor on controlled evidence envelope.
+6. Merge semantic outputs into non-deterministic `semantic.*` signals.
+7. Emit strict signal map for scoring and enrichment planning.
 
-Additional semantic stage:
-- LLM semantic assessor runs on a controlled evidence envelope.
-- Outputs bounded `semantic.*` signals with evidence references.
-- Semantic signals are merged before scoring.
+## Semantic Signal Coverage
+Current semantic signals:
+- `semantic.credential_theft_intent`
+- `semantic.coercive_language`
+- `semantic.payment_diversion_intent`
+- `semantic.impersonation_narrative`
+- `semantic.sender_name_deceptive`
+- `semantic.body_url_intent_mismatch`
+- `semantic.url_subject_context_mismatch`
+- `semantic.social_engineering_intent`
+- `semantic.prompt_injection_attempt`
 
-## Deterministic Evaluation
-Deterministic evaluators inspect these envelope areas:
+These signals emphasize:
+- sender-name/address deception,
+- URL obfuscation/redirect behavior,
+- mismatch between message topic and URL destinations,
+- phishing pressure language and social engineering cues,
+- prompt-injection attempts embedded in email text.
+
+## Deterministic Evaluation Areas
 - `message_metadata` for identity/header checks
-- `auth_summary` for SPF/DKIM/DMARC and alignment checks
+- `auth_summary` for SPF/DKIM/DMARC/alignment
 - `entities.urls/domains/emails/ips` for URL and infrastructure signals
-- `mime_parts.body_extraction` for content/evasion checks
-- `attachments` for static attachment indicators
-
-False-positive controls added:
-- known enterprise link wrappers (for example Outlook SafeLinks) are handled before URL mismatch scoring
-- redirect/obfuscation URL heuristics skip known link-wrapper hosts
-- header domain mismatch is downgraded when evidence suggests relay infrastructure with unknown auth
-- private-IP-in-Received signal is suppressed in likely enterprise relay contexts
-- brand-impersonation signal requires supporting coercive/credential context
+- `mime_parts.body_extraction` for wording/evasion checks
+- `attachments` for file-type and static indicators
 
 ## Non-Deterministic Evaluation
-Non-deterministic signals require connectors such as:
-- DNS TXT/MX lookups
-- WHOIS domain age
-- URL/IP reputation providers
-- attachment hash intel
-- sandboxing
-- campaign clustering/mailbox history
+Non-deterministic signals are resolved by enrichment tools (when available), including:
+- URL/IP/hash reputation
+- domain registration/WHOIS
+- DNS/MX context
+- attachment intel/sandbox context
+- campaign/history context
 
-If a connector is unavailable, the signal remains `unknown` with a rationale.
+If connectors are unavailable, signals remain `unknown` with rationale.
 
 ## Output Contract
 Output includes:
 - `schema_version`
 - `case_id`
 - `generated_at`
-- `signals` map keyed by signal id
-
-During investigation there are two snapshots:
-- baseline signal output before enrichment
-- final signal output after adaptive playbook loop updates
+- `signals` map keyed by signal ID
 
 Each signal entry includes:
 - `value` (`true|false|unknown`)
 - `kind` (`deterministic|non_deterministic`)
-- `evidence` (field paths and/or evidence ids)
+- `evidence`
 - `rationale`
 - `tool_requirements`
 
 ## CLI Usage
-Generate signals from envelope:
-
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent/Signal_Engine/signal_engine.py \
-  --envelope /Users/gabe/Documents/Phishing_Triage_Agent/Sample_Emails/Sample_Email.envelope.json \
-  --out /Users/gabe/Documents/Phishing_Triage_Agent/Sample_Emails/Sample_Email.signals.json
-```
-
-Include non-deterministic tool results:
-
-```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent/Signal_Engine/signal_engine.py \
-  --envelope /Users/gabe/Documents/Phishing_Triage_Agent/Sample_Emails/Sample_Email.envelope.json \
-  --tool-results /path/to/tool_results.json \
-  --out /path/to/signals.json
-```
-
-## Tool Results Shape
-Expected minimal structure:
-
-```json
-{
-  "signals": {
-    "url.reputation_malicious": {
-      "value": "true",
-      "evidence": ["ev_url_rep_001"],
-      "rationale": "Provider marked URL as malicious"
-    },
-    "infra.sending_ip_reputation_bad": false
-  }
-}
+python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/signal_engine.py \
+  --envelope /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Sample_Email.envelope.json \
+  --out /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Sample_Email.signals.json
 ```
 
 ## Maintenance Notes
-When adding or changing a signal:
-1. Update taxonomy file.
-2. Update deterministic or non-deterministic rule mapping.
-3. Update this documentation file.
-4. Re-run sample output checks.
-5. Re-check scoring weights and playbook triggers for the changed signals.
+When adding/changing signals:
+1. Update taxonomy and nondeterministic rules if needed.
+2. Update scoring weights and high-impact list.
+3. Update semantic assessor contracts if semantic IDs changed.
+4. Update this document in the same change set.

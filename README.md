@@ -1,136 +1,102 @@
 # Phishing Triage Agent (IN DEV)
 
-Evidence-first, deterministic phishing triage from a single `.eml` file, with an agentic investigation loop and outputs that are designed to be reused across CLI, REST API, and MCP adapters.
+Evidence-first phishing triage from a single `.eml` file with deterministic scoring, bounded semantic LLM analysis, and a local Docker Web UI.
 
-## Project Status
-Early-stage. The engineering plan lives in `Docs/phishing_agent_engineering_report.md`. Current source code is minimal (see `src/Ingestion/intake.py`).
-
-## Goals
-- Produce a deterministic verdict (`risk_score`, `verdict`, `reasons[]`) with auditable evidence.
-- Provide a strict LLM analyst report constrained to evidence only.
-- Start with a CLI UX and share a core that can be wrapped by REST API or MCP with minimal refactor.
-
-## Non-Goals (Initial)
-- Full mailbox ingestion (IMAP/Gmail).
-- Dynamic detonation of attachments.
-- Auto-remediation (quarantine/blocking). We only produce recommendations.
+## Current Direction
+- Web UI is the primary runtime (`docker compose up --build`).
+- Playbook orchestration is deprecated.
+- Investigation now uses deterministic enrichment-tool routing from unresolved non-deterministic signals.
+- LLM is constrained to semantic analysis + concise analyst copy, not tool execution or direct verdict control.
 
 ## Architecture Summary
 Pipeline stages:
-1. Parse & normalize `.eml` into a canonical envelope JSON.
-2. Generate bounded signals (`true/false/unknown`) using LLM + deterministic template.
-3. Assign playbooks deterministically based on signals.
-4. Run an agentic investigation loop with a tool allowlist and evidence logging.
-5. Compute a deterministic verdict from evidence and scoring rules.
-6. Generate a strict analyst report from evidence only.
+1. Parse + normalize `.eml` into envelope JSON.
+2. Generate deterministic signals.
+3. Run semantic LLM assessment on controlled evidence envelope.
+4. Score risk/confidence deterministically.
+5. Build deterministic enrichment tool plan from unknown non-deterministic signals.
+6. Execute bounded enrichment loop and rescore after each iteration.
+7. Emit final verdict, report, and audit artifacts.
 
 ```mermaid
 flowchart LR
-    A["CLI Input (.eml path)"] --> B["Normalization Envelope"]
+    A["EML Upload"] --> B["Normalization Envelope"]
     B --> C["Signal Engine<br/>(Deterministic + Semantic)"]
     C --> D["Scoring Engine<br/>(Risk + Confidence + Gate)"]
-    D --> E{"Invoke Agent?"}
+    D --> E{"Need Enrichment?"}
     E -- "No" --> H["Final Report + Verdict"]
-    E -- "Yes" --> F["Playbook Selector + Investigation Plan"]
-    F --> G["Adaptive Investigation Loop<br/>(MCP tools + bounded updates)"]
+    E -- "Yes" --> F["Deterministic Enrichment Plan"]
+    F --> G["Bounded Enrichment Loop<br/>(MCP tools + evidence mapping)"]
     G --> D
     H --> I["Artifacts + Audit Chain"]
-
-    classDef io fill:#E8F1FF,stroke:#3B5CCC,color:#0F1A2B,stroke-width:1px;
-    classDef core fill:#EAF8EF,stroke:#2E7D4F,color:#0F1A2B,stroke-width:1px;
-    classDef gate fill:#FFF6E5,stroke:#A06A00,color:#0F1A2B,stroke-width:1px;
-    classDef out fill:#F5F0FF,stroke:#6B4BA3,color:#0F1A2B,stroke-width:1px;
-
-    class A io;
-    class B,C,D,F,G core;
-    class E gate;
-    class H,I out;
 ```
 
-Artifacts:
-- `envelope.json`, `signals.json`, `evidence_log.jsonl`, `verdict.json`, `analyst_report.json`, and derived IOC bundles.
+## Key Components
+- Ingestion/Normalization: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/src/Ingestion/intake.py`
+- Signal Engine: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/signal_engine.py`
+- Semantic Assessor: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/semantic_signal_assessor.py`
+- Scoring Engine: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Scoring_Engine/scoring_engine.py`
+- Investigation Orchestrator: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/investigation_pipeline.py`
+- MCP Router + Cache: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/MCP_Adapters/mcp_router.py`
+- Local Web UI: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/webui/`
 
-## Current Components
-- Ingestion/Normalization: `/Users/gabe/Documents/Phishing_Triage_Agent/src/Ingestion/intake.py`
-- Signal Engine: `/Users/gabe/Documents/Phishing_Triage_Agent/Signal_Engine/signal_engine.py`
-- Signal taxonomy/rules: `/Users/gabe/Documents/Phishing_Triage_Agent/Signal_Engine/*.yaml`
-- Scoring Engine: `/Users/gabe/Documents/Phishing_Triage_Agent/Scoring_Engine/scoring_engine.py`
-- Playbook Selector: `/Users/gabe/Documents/Phishing_Triage_Agent/Playbooks/playbook_selector.py`
-- MCP Adapter Stubs + Cache: `/Users/gabe/Documents/Phishing_Triage_Agent/MCP_Adapters/mcp_router.py`
-- Investigation Agent (adaptive loop): `/Users/gabe/Documents/Phishing_Triage_Agent/Investigation_Agent/investigation_pipeline.py`
-- CLI Runner + service abstraction:
-  - `/Users/gabe/Documents/Phishing_Triage_Agent/cli/phishscan.py`
-  - `/Users/gabe/Documents/Phishing_Triage_Agent/Investigation_Agent/pipeline_service.py`
+## Docs
+- Normalization: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/normalization/normalization_pipeline.md`
+- Signals: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/signals/signal_engine_pipeline.md`
+- Semantic assessor: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/signals/semantic_signal_assessor.md`
+- Scoring: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/scoring/scoring_engine_pipeline.md`
+- Investigation pipeline: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/investigation/investigation_agent_pipeline.md`
+- Web UI: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/webui/local_webui_pipeline.md`
+- Audit chain: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/investigation/audit_chain.md`
+- Prompt contracts (active): `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/prompts/prompt_contracts.md`
 
-## Component Docs
-- Normalization pipeline: `/Users/gabe/Documents/Phishing_Triage_Agent/Docs/normalization/normalization_pipeline.md`
-- Signal engine pipeline: `/Users/gabe/Documents/Phishing_Triage_Agent/Docs/signals/signal_engine_pipeline.md`
-- Semantic signal assessor: `/Users/gabe/Documents/Phishing_Triage_Agent/Docs/signals/semantic_signal_assessor.md`
-- Scoring engine pipeline: `/Users/gabe/Documents/Phishing_Triage_Agent/Docs/scoring/scoring_engine_pipeline.md`
-- Playbook pipeline: `/Users/gabe/Documents/Phishing_Triage_Agent/Docs/playbooks/playbook_pipeline.md`
-- MCP tooling and cache: `/Users/gabe/Documents/Phishing_Triage_Agent/Docs/mcp/mcp_tooling_and_cache.md`
-- Investigation pipeline: `/Users/gabe/Documents/Phishing_Triage_Agent/Docs/investigation/investigation_agent_pipeline.md`
-- Audit chain: `/Users/gabe/Documents/Phishing_Triage_Agent/Docs/investigation/audit_chain.md`
-- Prompt contracts: `/Users/gabe/Documents/Phishing_Triage_Agent/Docs/prompts/prompt_contracts.md`
-- Confidence gate and pivot: `/Users/gabe/Documents/Phishing_Triage_Agent/Docs/gating/confidence_gate_and_pivot.md`
-- Command-line workflow: `/Users/gabe/Documents/Phishing_Triage_Agent/Docs/cli/command_line_tool.md`
+## Legacy Docs
+- Historical engineering plan (reference only): `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/phishing_agent_engineering_report.md`
 
-## CLI Usage
-Interactive mode (prompts for `.eml` path with extension validation):
+## Web UI (Docker)
+Run:
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent/cli/phishscan.py
+docker compose up --build
 ```
 
-One-shot mode:
+Open:
+- `http://localhost:8080`
+
+UI highlights:
+- JSX React frontend (Vite + Tailwind) served by FastAPI from `webui/frontend/dist`,
+- production-style split view (report workspace + sticky case queue),
+- persistent `New Analysis` and `Back to Upload` actions for repeat investigations,
+- report hero with animated risk ring, sender/date/confidence metadata row, and verdict badge,
+- fixed-height queue cards with line-clamped subjects and risk-color alignment to verdict,
+- `Indicators of Compromise` cards with grouped modal drill-down + full IOC copy,
+- targeted semantic IOC overrides (no blanket “all suspicious” promotion),
+- `View Detailed Review` modal with semantic rationale and sandboxed snippet evidence,
+- neutral gray attachment card when no files are present (`No attachments found`).
+
+Frontend source:
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/webui/frontend/src/App.jsx`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/webui/frontend/src/index.css`
+
+Stop:
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent/cli/phishscan.py \
+docker compose down
+```
+
+## CLI (Optional)
+Interactive:
+```bash
+python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/cli/phishscan.py
+```
+
+One-shot:
+```bash
+python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/investigation_pipeline.py \
   --eml /absolute/path/to/email.eml \
-  --mode live
+  --out-dir /absolute/path/to/output_dir \
+  --mode mock
 ```
 
-Optional scrub of run artifacts after each run:
-```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent/cli/phishscan.py --scrub-artifacts
-```
-
-## Dynamic Analysis Providers
-Current pipeline supports URL dynamic analysis through:
-- `urlscan_detonate` (hosted detonation + result polling)
-- `cuckoo_url_detonate` (self-hosted CAPE/Cuckoo URL task + report polling)
-- `urlhaus_lookup` (malware URL/host reputation enrichment)
-
-Configure API/runtime settings in `/Users/gabe/Documents/Phishing_Triage_Agent/.env` (see `/Users/gabe/Documents/Phishing_Triage_Agent/.env.example`).
-
-## Project Plan
-The implementation plan is organized into phases. This README summarizes the plan at a high level; details are in `Docs/phishing_agent_engineering_report.md`.
-
-### Phase 1: CLI MVP
-- Parser/Normalizer for `.eml` (MIME, headers, Authentication-Results).
-- JSON schema validation for the envelope.
-- Bounded signal generation (strict JSON template).
-- Deterministic playbook selection.
-- Investigation loop with a small tool set (DNS, WHOIS, URL normalization).
-- Deterministic verdict core with evidence-backed reasons.
-- Strict LLM analyst report.
-- CLI command: `phishscan analyze --eml file.eml`.
-
-### Phase 2: Enrichment + Caching
-- URL reputation connector.
-- Domain intel (age/registrar) with caching.
-- Attachment static analyzers (PDF/Office URL extraction, macro indicators).
-- IOC bundle export + hunt query generation.
-
-### Phase 3: API + MCP
-- REST `POST /analyze` returning `Verdict` + artifacts.
-- MCP tool `analyze_email` returning the same schemas.
-
-## Suggested Repo Layout
-See Appendix A in `Docs/phishing_agent_engineering_report.md` for a recommended Python package layout.
-
-## How to Contribute (Early)
-- Start with `Docs/phishing_agent_engineering_report.md`.
-- Implement core primitives in small, testable modules (parser, schema, verdict).
-- Add tests for parsing and schema validation from the start.
-
-## License
-TBD.
+## Notes
+- Semantic analysis is schema-constrained and prompt-injection hardened.
+- Final verdict remains deterministic and evidence-backed.
+- Existing `Playbooks/` files remain in repo for reference, but orchestration no longer depends on them.
