@@ -1,4 +1,4 @@
-# Phishing Triage Agent
+# AI - Phishing Triage System 
 
 Evidence-first phishing triage for `.eml` messages using deterministic scoring, bounded LLM semantics, adaptive threat-intel enrichment, and a local Docker Web UI.
 
