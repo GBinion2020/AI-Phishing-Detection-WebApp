@@ -73,10 +73,10 @@ flowchart LR
 ## UI Preview
 
 ### Main Investigation Workspace
-![Main investigation UI](Docs/assets/ui/ui-main.png)
-
-### Upload and Launch Workflow
 ![Upload workflow UI](Docs/assets/ui/ui-upload.png)
+
+### IOC Analysis Feature
+![Main investigation UI](Docs/assets/ui/ui-main.png)
 
 ## Quick Start
 
