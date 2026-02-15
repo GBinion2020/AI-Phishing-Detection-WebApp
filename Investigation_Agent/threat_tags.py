@@ -22,7 +22,6 @@ TAG_CATALOG: dict[str, dict[str, str]] = {
     "malware_delivery": {"label": "Malware Delivery", "severity": "critical"},
     "attachment_weaponized": {"label": "Weaponized Attachment", "severity": "high"},
     "account_takeover": {"label": "Account Takeover", "severity": "high"},
-    "url_obfuscation_redirect": {"label": "URL Obfuscation / Redirect", "severity": "medium"},
     "spoof_auth_failure": {"label": "Spoofing / Auth Failure", "severity": "high"},
     "social_engineering_urgency": {"label": "Social Engineering Urgency", "severity": "medium"},
     "spam_marketing": {"label": "Spam / Marketing", "severity": "low"},
@@ -37,6 +36,37 @@ SEVERITY_RANK = {
     "medium": 3,
     "low": 2,
     "info": 1,
+}
+
+CLASS_TAG_PREFERENCE: dict[str, list[str]] = {
+    "phish": [
+        "credential_harvest",
+        "payment_diversion",
+        "malware_delivery",
+        "bec_invoice_fraud",
+        "brand_impersonation",
+        "spoof_auth_failure",
+        "attachment_weaponized",
+        "account_takeover",
+        "data_exfiltration_lure",
+        "social_engineering_urgency",
+    ],
+    "suspicious": [
+        "social_engineering_urgency",
+        "brand_impersonation",
+        "spoof_auth_failure",
+        "account_takeover",
+        "data_exfiltration_lure",
+        "attachment_weaponized",
+        "credential_harvest",
+        "payment_diversion",
+    ],
+    "benign": [
+        "spam_marketing",
+        "graymail_promotional",
+        "recon_or_test_message",
+        "social_engineering_urgency",
+    ],
 }
 
 
@@ -141,13 +171,6 @@ def derive_threat_tags(
     ) or _signal_true(signals_doc, "content.brand_impersonation"):
         add("brand_impersonation", "high", "Impersonation or lookalike evidence detected")
 
-    if _signal_true(signals_doc, "semantic.body_url_intent_mismatch") or _signal_true(
-        signals_doc, "semantic.url_subject_context_mismatch"
-    ) or _signal_true(signals_doc, "url.redirect_chain_detected") or _signal_true(
-        signals_doc, "url.multiple_redirect_pattern_in_path"
-    ) or _signal_true(signals_doc, "url.long_obfuscated_string"):
-        add("url_obfuscation_redirect", "medium", "URL indirection/obfuscation indicators detected")
-
     if _signal_true(signals_doc, "auth.spf_fail") or _signal_true(
         signals_doc, "auth.dkim_fail"
     ) or _signal_true(signals_doc, "auth.dmarc_fail") or _signal_true(signals_doc, "auth.alignment_fail"):
@@ -181,19 +204,38 @@ def derive_threat_tags(
         add("spam_marketing", "medium", "Promotional or recruiting message profile detected")
 
     if verdict == "benign" and risk_score <= 15 and not tags:
-        add("graymail_promotional", "medium", "No high-risk indicators; message resembles low-risk bulk mail")
+        add("spam_marketing", "medium", "No high-risk indicators; message resembles low-risk bulk mail")
 
-    ranked = sorted(
-        tags.values(),
-        key=lambda row: (
-            -SEVERITY_RANK.get(str(row.get("severity") or "info"), 0),
-            0 if str(row.get("confidence") or "") == "high" else 1,
-            str(row.get("id") or ""),
-        ),
-    )
-    primary = ranked[0]["id"] if ranked else None
+    ranked = list(tags.values())
+    if ranked:
+        pref_list = CLASS_TAG_PREFERENCE.get(verdict, CLASS_TAG_PREFERENCE.get("suspicious", []))
+        pref_rank = {tag_id: idx for idx, tag_id in enumerate(pref_list)}
+        ranked.sort(
+            key=lambda row: (
+                pref_rank.get(str(row.get("id") or ""), 10_000),
+                -SEVERITY_RANK.get(str(row.get("severity") or "info"), 0),
+                0 if str(row.get("confidence") or "") == "high" else 1,
+                str(row.get("id") or ""),
+            )
+        )
+        primary_row = ranked[0]
+    else:
+        # Keep output schema stable with one deterministic fallback tag aligned to verdict.
+        if verdict == "benign":
+            fallback_id = "spam_marketing"
+        elif verdict == "phish":
+            fallback_id = "credential_harvest"
+        else:
+            fallback_id = "social_engineering_urgency"
+        primary_row = {
+            "id": fallback_id,
+            "label": TAG_CATALOG[fallback_id]["label"],
+            "severity": TAG_CATALOG[fallback_id]["severity"],
+            "confidence": "medium",
+            "reasons": [],
+        }
+    primary = primary_row["id"]
     return {
         "primary_threat_tag": primary,
-        "threat_tags": ranked[:6],
+        "threat_tags": [primary_row],
     }
-

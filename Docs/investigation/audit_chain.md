@@ -4,7 +4,7 @@
 Provide stage-by-stage traceability for each case run so failures and regressions are diagnosable.
 
 Implementation file:
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/audit_chain.py`
+- `Investigation_Agent/audit_chain.py`
 
 ## Artifacts
 Generated per run:

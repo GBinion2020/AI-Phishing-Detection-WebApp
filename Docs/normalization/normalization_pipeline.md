@@ -4,7 +4,7 @@
 Normalization converts a raw `.eml` file into the stable Envelope JSON contract used by the signal engine and later investigation stages.
 
 Implementation file:
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/src/Ingestion/intake.py`
+- `src/Ingestion/intake.py`
 
 ## Envelope Contract
 Top-level fields currently emitted:
@@ -36,9 +36,9 @@ Top-level fields currently emitted:
 
 ## CLI Usage
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/src/Ingestion/intake.py \
-  --eml /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Sample_Email.eml \
-  --out /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Sample_Email.envelope.json
+python3 src/Ingestion/intake.py \
+  --eml Sample_Emails/Sample_Email.eml \
+  --out Sample_Emails/Sample_Email.envelope.json
 ```
 
 ## Known Limits

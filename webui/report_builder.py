@@ -128,6 +128,8 @@ Analysis focus:
 Output rules:
 - Output JSON only using schema.
 - Keep language plain and brief.
+- Do not include recommendations or action guidance.
+- Avoid technical jargon/acronyms (for example ESP/CTA/DMARC/SPF/DKIM) in end-user summary wording.
 - summary_sentences must be exactly two analyst-friendly sentences.
 - key_points must be exactly three short bullets.
 - Keep subject/body analysis to one sentence each.
@@ -195,16 +197,18 @@ def _normalize_threat_tags(final_score: dict[str, Any], classification: str) -> 
             }
         )
     if normalized:
-        primary = str(final_score.get("primary_threat_tag") or normalized[0]["id"])
-        return primary, normalized[:6]
+        preferred_id = str(final_score.get("primary_threat_tag") or "").strip()
+        primary_row = next((row for row in normalized if row.get("id") == preferred_id), normalized[0])
+        primary = str(primary_row.get("id") or normalized[0]["id"])
+        return primary, [primary_row]
 
     # Keep schema stable with deterministic fallback labels.
     if classification == "malicious":
         fallback = [{"id": "social_engineering_urgency", "label": "Social Engineering Urgency", "severity": "high", "confidence": "medium", "reasons": []}]
     elif classification == "non_malicious":
-        fallback = [{"id": "graymail_promotional", "label": "Graymail Promotional", "severity": "info", "confidence": "medium", "reasons": []}]
+        fallback = [{"id": "spam_marketing", "label": "Spam / Marketing", "severity": "low", "confidence": "medium", "reasons": []}]
     else:
-        fallback = [{"id": "url_obfuscation_redirect", "label": "URL Obfuscation / Redirect", "severity": "medium", "confidence": "medium", "reasons": []}]
+        fallback = [{"id": "social_engineering_urgency", "label": "Social Engineering Urgency", "severity": "medium", "confidence": "medium", "reasons": []}]
     return fallback[0]["id"], fallback
 
 
@@ -976,6 +980,74 @@ def _fallback_ai_copy(
     }
 
 
+def _classification_aligned_summary(
+    classification: str,
+    result: dict[str, Any],
+    panels: list[dict[str, Any]],
+    marketing_context: bool,
+    auth_all_pass: bool,
+) -> list[str]:
+    signals = ((result.get("final_signals") or {}).get("signals") or {})
+
+    def _true(signal_id: str) -> bool:
+        payload = signals.get(signal_id) or {}
+        return str(payload.get("value") or "").lower() == "true"
+
+    concern_labels: list[str] = []
+    if _true("identity.lookalike_domain_confirmed") or _true("semantic.sender_name_deceptive") or _true("auth.alignment_fail"):
+        concern_labels.append("sender identity")
+    if _true("semantic.credential_theft_intent") or _true("semantic.payment_diversion_intent") or _true("content.credential_harvest_language"):
+        concern_labels.append("message wording")
+    if _true("semantic.body_url_intent_mismatch") or _true("semantic.url_subject_context_mismatch") or _true("url.redirect_chain_detected"):
+        concern_labels.append("link behavior")
+    if _true("attachment.hash_known_malicious") or _true("attachment.sandbox_behavior_malicious") or _true("attachment.suspicious_file_type"):
+        concern_labels.append("attachments")
+
+    for panel in panels:
+        level = str(panel.get("level") or "")
+        if level not in {"yellow", "red"}:
+            continue
+        panel_id = str(panel.get("id") or "")
+        if panel_id == "urls" and "link behavior" not in concern_labels:
+            concern_labels.append("link behavior")
+        elif panel_id == "domains" and "sender identity" not in concern_labels:
+            concern_labels.append("sender identity")
+        elif panel_id == "ips" and "sender infrastructure" not in concern_labels:
+            concern_labels.append("sender infrastructure")
+        elif panel_id == "attachments" and "attachments" not in concern_labels:
+            concern_labels.append("attachments")
+
+    concern_labels = concern_labels[:2]
+    concern_phrase = " and ".join(concern_labels)
+
+    if classification == "non_malicious":
+        if marketing_context and auth_all_pass:
+            first = "The findings are most consistent with a benign marketing or recruiting email."
+        else:
+            first = "The findings are most consistent with a benign email."
+        if concern_phrase:
+            second = f"A few low-risk concerns were seen in {concern_phrase}, but they were not strong enough to indicate phishing."
+        else:
+            second = "No strong phishing indicators were found in sender identity, message wording, links, or attachments."
+        return [first, second]
+
+    if classification == "malicious":
+        first = "The findings strongly indicate a malicious phishing email."
+        if concern_phrase:
+            second = f"High-risk findings were present in {concern_phrase}, which drove the malicious classification."
+        else:
+            second = "Multiple high-risk indicators were found across the analyzed evidence."
+        return [first, second]
+
+    # suspicious
+    first = "The findings are mixed, so this email is classified as suspicious."
+    if concern_phrase:
+        second = f"The main concerns were in {concern_phrase}, but the evidence was not fully conclusive for malicious classification."
+    else:
+        second = "Some indicators were unusual, but the evidence was not strong enough for a malicious classification."
+    return [first, second]
+
+
 def build_web_report(
     envelope: dict[str, Any],
     result: dict[str, Any],
@@ -1258,7 +1330,7 @@ def build_web_report(
     while len(key_points) < 3:
         filler = "Evidence was reviewed before final classification."
         if _is_duplicate_finding(key_signatures, filler):
-            filler = "Analyst validation is recommended before final action."
+            filler = "Some findings were limited, so confidence remains moderate."
         key_points.append(filler)
         key_signatures.append(_finding_signature(filler))
 
@@ -1380,6 +1452,14 @@ def build_web_report(
         if len(evidence_highlights) >= 5:
             break
 
+    scripted_summary = _classification_aligned_summary(
+        classification=classification,
+        result=result,
+        panels=panels,
+        marketing_context=marketing_context,
+        auth_all_pass=auth_all_pass,
+    )
+
     result_heading_map = {
         "malicious": "This appears malicious.",
         "suspicious": "This appears suspicious.",
@@ -1395,8 +1475,8 @@ def build_web_report(
         "threat_tags": threat_tags,
         "result_heading": result_heading_map.get(classification, "This appears suspicious."),
         "analyst_summary": (
-            f"{_sentence_safe_trim(summary_sentences[0], 260)} "
-            f"{_sentence_safe_trim(summary_sentences[1], 260)}"
+            f"{_sentence_safe_trim(scripted_summary[0], 260)} "
+            f"{_sentence_safe_trim(scripted_summary[1], 260)}"
         ),
         "key_points": key_points,
         "ioc_items": ioc_items[:16],

@@ -1,21 +1,43 @@
-%% Current architecture diagram (active runtime)
-%% Updated: February 14, 2026
-
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "background": "#F8FAFC",
+    "primaryColor": "#E8F0FE",
+    "primaryTextColor": "#0F172A",
+    "primaryBorderColor": "#BFD3F6",
+    "lineColor": "#6B7280",
+    "secondaryColor": "#EEF2FF",
+    "tertiaryColor": "#F1F5F9",
+    "clusterBkg": "#F8FAFC",
+    "clusterBorder": "#D6E3FA"
+  }
+}}%%
 flowchart LR
-  A["EML Upload (.eml)"] --> B["Normalization Envelope"]
-  B --> C["Signal Engine<br/>(Deterministic + Semantic)"]
-  C --> D["Scoring Engine<br/>(Risk + Confidence + Gate)"]
-  D --> E{"Need Enrichment?"}
-  E -- "No" --> H["Final Report + Verdict"]
-  E -- "Yes" --> F["Deterministic Enrichment Plan<br/>(unknown non-deterministic signals)"]
-  F --> G["Bounded Enrichment Loop<br/>(MCP tools + evidence mapping)"]
-  G --> D
-  H --> I["Artifacts + Audit Chain"]
+    U["Upload .eml"] --> API["FastAPI API\nwebui/app.py"]
+    API --> STORE["CaseStore + SQLite\nwebui/case_store.py"]
+    API --> RUNNER["Background Runner\nwebui/case_runner.py"]
 
-  subgraph WEBUI["Local Web UI (Docker)"]
-    J["FastAPI API + SSE"]
-    K["React JSX Frontend"]
-  end
+    subgraph CORE["Investigation Pipeline"]
+      NORM["Envelope Normalization\nsrc/Ingestion/intake.py"]
+      SIG["Deterministic Signal Evaluation\nSignal_Engine/signal_engine.py"]
+      SCORE0["Baseline Scoring\nScoring_Engine/scoring_engine.py"]
+      PLAN["Adaptive Tool Selection\nInvestigation_Agent/investigation_pipeline.py"]
+      ROUTER["MCP Routing + IOC Cache\nMCP_Adapters/mcp_router.py"]
+      SEM["Semantic Assessment (bounded LLM)\nSignal_Engine/semantic_signal_assessor.py"]
+      LOOP["Adaptive Enrichment Loop\nwith early-stop gating"]
+      SCOREF["Final Score + Primary Threat Tag\nInvestigation_Agent/threat_tags.py"]
+      REPORT["Report Assembly\nwebui/report_builder.py"]
+      AUDIT["Audit Chain\nInvestigation_Agent/audit_chain.py"]
+    end
 
-  H --> J
-  J --> K
+    RUNNER --> NORM --> SIG --> SCORE0 --> PLAN --> ROUTER --> SEM --> LOOP --> SCOREF --> REPORT
+    REPORT --> STORE
+    AUDIT --> STORE
+
+    STORE --> SSE["SSE Stream\nwebui/event_stream.py"]
+    SSE --> UI["React UI\nwebui/frontend/src/App.jsx"]
+
+    classDef compute fill:#EEF6FF,stroke:#B6CDF5,color:#0F172A;
+    classDef edge fill:#F2F8FF,stroke:#C3D9FA,color:#0F172A;
+    class NORM,SIG,SCORE0,PLAN,ROUTER,SEM,LOOP,SCOREF,REPORT,AUDIT compute;
+    class U,API,STORE,RUNNER,SSE,UI edge;

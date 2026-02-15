@@ -4,15 +4,15 @@
 Define and document the JSON contracts used by active LLM calls in the current pipeline.
 
 Current implementation files:
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/llm_client.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/semantic_signal_assessor.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/webui/report_builder.py`
+- `Investigation_Agent/llm_client.py`
+- `Signal_Engine/semantic_signal_assessor.py`
+- `webui/report_builder.py`
 
 ## Active LLM Contracts
 
 ### 1. Semantic Signal Assessment
 Producer:
-- `assess_semantic_signals(...)` in `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/semantic_signal_assessor.py`
+- `assess_semantic_signals(...)` in `Signal_Engine/semantic_signal_assessor.py`
 
 Contract shape:
 - `prompt_injection_detected` (bool)
@@ -32,7 +32,7 @@ Validation behavior:
 
 ### 2. Web UI Report Copy Contract
 Producer:
-- `build_web_report(...)` in `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/webui/report_builder.py`
+- `build_web_report(...)` in `webui/report_builder.py`
 
 Schema key:
 - `WEB_REPORT_SCHEMA`
@@ -47,6 +47,7 @@ Required fields:
 
 Validation behavior:
 - Structured JSON only.
+- Summary text is post-processed to stay classification-aligned, plain-language, and recommendation-free.
 - If schema validation fails or LLM is unavailable, deterministic fallback copy is used.
 
 ## Prompt Safety Rules

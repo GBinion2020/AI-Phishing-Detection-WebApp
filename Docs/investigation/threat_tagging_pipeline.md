@@ -4,7 +4,7 @@
 Derive deterministic analyst-facing threat tags from final investigation signals and score outputs.
 
 Implementation file:
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/threat_tags.py`
+- `Investigation_Agent/threat_tags.py`
 
 ## Inputs
 - Final normalized envelope (`envelope` object in pipeline memory)
@@ -14,7 +14,7 @@ Implementation file:
 ## Outputs
 Threat-tag derivation emits:
 - `primary_threat_tag` (single tag id)
-- `threat_tags[]` (ordered list, max 6) with:
+- `threat_tags[]` (single-item array containing the primary tag) with:
   - `id`
   - `label`
   - `severity` (`critical|high|medium|low|info`)
@@ -32,8 +32,7 @@ These fields are attached to:
 3. Apply authenticated-marketing guardrails:
    - when auth passes and message context is promotional, avoid escalating to high-severity phishing tags unless strong high-risk drivers are present.
 4. Add low-severity informational tags for graymail/promotional context when appropriate.
-5. Rank tags by severity, then confidence, then id for stable ordering.
-6. Select first ranked tag as `primary_threat_tag`.
+5. Select the single highest-likelihood tag aligned to final verdict class (`phish|suspicious|benign`), then publish only that tag.
 
 ## Current Tag Catalog
 - `credential_harvest`
@@ -43,7 +42,6 @@ These fields are attached to:
 - `malware_delivery`
 - `attachment_weaponized`
 - `account_takeover`
-- `url_obfuscation_redirect`
 - `spoof_auth_failure`
 - `social_engineering_urgency`
 - `spam_marketing`

@@ -8,8 +8,8 @@ Convert bounded signal output into deterministic:
 - `agent_gate` (`invoke_agent` true/false)
 
 Implementation files:
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Scoring_Engine/scoring_engine.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Scoring_Engine/scoring_weights.yaml`
+- `Scoring_Engine/scoring_engine.py`
+- `Scoring_Engine/scoring_weights.yaml`
 
 ## Input Contract
 Each signal must include:
@@ -83,8 +83,8 @@ Gate runs at:
 
 ## CLI Usage
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Scoring_Engine/scoring_engine.py \
-  --signals /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Sample_Email.signals.json \
-  --weights /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Scoring_Engine/scoring_weights.yaml \
-  --out /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Sample_Email.score.json
+python3 Scoring_Engine/scoring_engine.py \
+  --signals Sample_Emails/Sample_Email.signals.json \
+  --weights Scoring_Engine/scoring_weights.yaml \
+  --out Sample_Emails/Sample_Email.score.json
 ```

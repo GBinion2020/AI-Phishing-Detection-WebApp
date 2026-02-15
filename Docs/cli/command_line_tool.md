@@ -8,9 +8,9 @@ Provide an operator-friendly CLI wrapper for investigation runs with:
 - runtime memory scrubbing.
 
 Implementation files:
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/cli/phishscan.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/pipeline_service.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/investigation_pipeline.py`
+- `cli/phishscan.py`
+- `Investigation_Agent/pipeline_service.py`
+- `Investigation_Agent/investigation_pipeline.py`
 
 ## Runtime Flow
 1. Accept `.eml` path (interactive or `--eml`).
@@ -36,17 +36,17 @@ Implementation files:
 ## Commands
 Interactive:
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/cli/phishscan.py
+python3 cli/phishscan.py
 ```
 
 One-shot:
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/cli/phishscan.py \
+python3 cli/phishscan.py \
   --eml /absolute/path/to/email.eml \
   --mode live
 ```
 
 Scrub artifacts:
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/cli/phishscan.py --scrub-artifacts
+python3 cli/phishscan.py --scrub-artifacts
 ```

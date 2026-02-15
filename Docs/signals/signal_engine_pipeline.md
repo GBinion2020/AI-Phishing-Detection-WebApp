@@ -6,15 +6,15 @@ Convert normalized envelope data into bounded triage signals (`true|false|unknow
 ## Inputs
 - Envelope JSON from normalization:
   - `schema_version`, `case_id`, `message_metadata`, `auth_summary`, `entities`, `mime_parts`, `attachments`, `warnings`
-- Signal registry/rule files in `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine`
+- Signal registry/rule files in `Signal_Engine`
 - Optional external tool results for non-deterministic signals
 
 ## Configuration Files
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/signal_taxonomy.yaml`
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/signal_rules_deterministic.yaml`
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/signal_rules_nondeterministic.yaml`
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/tool_requirements.yaml`
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/signal_output_schema.yaml`
+- `Signal_Engine/signal_taxonomy.yaml`
+- `Signal_Engine/signal_rules_deterministic.yaml`
+- `Signal_Engine/signal_rules_nondeterministic.yaml`
+- `Signal_Engine/tool_requirements.yaml`
+- `Signal_Engine/signal_output_schema.yaml`
 
 ## Execution Stages
 1. Load taxonomy and rule mappings.
@@ -91,9 +91,9 @@ Each signal entry includes:
 
 ## CLI Usage
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/signal_engine.py \
-  --envelope /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Sample_Email.envelope.json \
-  --out /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Sample_Email.signals.json
+python3 Signal_Engine/signal_engine.py \
+  --envelope Sample_Emails/Sample_Email.envelope.json \
+  --out Sample_Emails/Sample_Email.signals.json
 ```
 
 ## Maintenance Notes

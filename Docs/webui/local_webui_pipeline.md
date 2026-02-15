@@ -91,7 +91,7 @@ Per-tool enrichment runtime messages are emitted from:
 ## Report Data Contract (UI)
 `web_report` includes:
 - `classification`, `result_heading`, `analyst_summary`, `key_points`
-- `primary_threat_tag`, `threat_tags[]`
+- `primary_threat_tag`, `threat_tags[]` (single primary-tag record for UI badge rendering)
 - `ioc_items`, `urls_clean_note`
 - `subject_line`, `sender_address`, `sender_domain`
 - `subject_level`, `subject_analysis`

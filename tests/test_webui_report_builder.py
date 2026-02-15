@@ -80,6 +80,7 @@ class WebReportBuilderTests(unittest.TestCase):
         self.assertIn("primary_threat_tag", report)
         self.assertIn("threat_tags", report)
         self.assertGreaterEqual(len(report.get("threat_tags") or []), 1)
+        self.assertEqual(len(report.get("threat_tags") or []), 1)
 
     def test_non_sender_semantic_signal_does_not_force_sender_domain_suspicious(self) -> None:
         envelope = {
@@ -182,6 +183,55 @@ class WebReportBuilderTests(unittest.TestCase):
         domain_panel = next((x for x in report["indicator_panels"] if x.get("id") == "domains"), {})
         self.assertEqual(domain_panel.get("level"), "green")
         self.assertEqual(domain_panel.get("title"), "Domains look benign")
+
+    def test_benign_summary_stays_classification_aligned_and_plain(self) -> None:
+        envelope = {
+            "case_id": "case_777",
+            "message_metadata": {
+                "subject": "Apply for network engineer roles",
+                "from": {"address": "jobs@alerts.example.com", "domain": "alerts.example.com"},
+                "headers": {"list-unsubscribe": "<mailto:unsubscribe@example.com>"},
+            },
+            "mime_parts": {
+                "body_extraction": {
+                    "text_plain": "Hi there,\nNew roles are available.\nUnsubscribe any time.",
+                }
+            },
+            "entities": {
+                "urls": [{"normalized": "https://u111.ct.sendgrid.net/ls/click?upn=abc", "domain": "u111.ct.sendgrid.net"}],
+                "domains": [{"domain": "alerts.example.com"}, {"domain": "u111.ct.sendgrid.net"}],
+                "ips": [],
+            },
+            "attachments": [],
+            "auth_summary": {
+                "spf": {"result": "pass"},
+                "dmarc": {"result": "pass", "aligned": True},
+                "dkim": [{"result": "pass"}],
+            },
+        }
+        result = {
+            "case_id": "case_777",
+            "final_score": {
+                "verdict": "benign",
+                "risk_score": 16,
+                "confidence_score": 0.86,
+                "primary_threat_tag": "spam_marketing",
+                "threat_tags": [
+                    {"id": "spam_marketing", "label": "Spam / Marketing", "severity": "low", "confidence": "high", "reasons": []},
+                    {"id": "url_obfuscation_redirect", "label": "URL Obfuscation / Redirect", "severity": "medium", "confidence": "medium", "reasons": []},
+                ],
+            },
+            "final_signals": {"signals": {}},
+        }
+
+        report = build_web_report(envelope=envelope, result=result, llm=_LLMDisabled())
+        summary = str(report.get("analyst_summary") or "").lower()
+        self.assertIn("benign", summary)
+        self.assertNotIn("treat with caution", summary)
+        self.assertNotIn("esp", summary)
+        self.assertNotIn("cta", summary)
+        self.assertEqual(len(report.get("threat_tags") or []), 1)
+        self.assertEqual(str((report.get("threat_tags") or [{}])[0].get("id")), "spam_marketing")
 
     def test_marketing_key_points_drop_tracking_obfuscation_and_dedupe_urgency(self) -> None:
         envelope = {

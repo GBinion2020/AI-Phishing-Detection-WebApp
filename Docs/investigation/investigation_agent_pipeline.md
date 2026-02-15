@@ -4,10 +4,10 @@
 Run bounded phishing investigation after normalization and baseline scoring, without playbooks.
 
 Implementation files:
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/investigation_pipeline.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/llm_client.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/audit_chain.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/prompt_templates.py`
+- `Investigation_Agent/investigation_pipeline.py`
+- `Investigation_Agent/llm_client.py`
+- `Investigation_Agent/audit_chain.py`
+- `Investigation_Agent/prompt_templates.py`
 
 ## Pipeline Stages
 1. Build envelope from `.eml`.
@@ -90,7 +90,7 @@ Generated under run directory (`--out-dir`):
 
 `score.final.json` now also includes deterministic threat-tag outputs:
 - `primary_threat_tag`
-- `threat_tags[]` (id, label, severity, confidence, reasons)
+- `threat_tags[]` (single-item array: id, label, severity, confidence, reasons)
 
 ## Event Hook Interface
 `run_pipeline(...)` supports optional `event_hook(event_name, payload)` callback.
@@ -110,8 +110,8 @@ Emitted events:
 
 ## CLI Example
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Investigation_Agent/investigation_pipeline.py \
-  --eml /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Sample_Email.eml \
-  --out-dir /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Case_Run_001 \
+python3 Investigation_Agent/investigation_pipeline.py \
+  --eml Sample_Emails/Sample_Email.eml \
+  --out-dir Sample_Emails/Case_Run_001 \
   --mode mock
 ```

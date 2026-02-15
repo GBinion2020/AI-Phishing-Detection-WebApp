@@ -7,15 +7,15 @@ Provide MCP-style tool contracts for enrichment APIs with:
 - live API routing with deferred/error fallbacks
 
 Implementation files:
-- `/Users/gabe/Documents/Phishing_Triage_Agent/MCP_Adapters/mcp_tool_registry.yaml`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/MCP_Adapters/mcp_router.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/MCP_Adapters/ioc_cache.py`
-- `/Users/gabe/Documents/Phishing_Triage_Agent/MCP_Adapters/mock_enrichment.py`
+- `MCP_Adapters/mcp_tool_registry.yaml`
+- `MCP_Adapters/mcp_router.py`
+- `MCP_Adapters/ioc_cache.py`
+- `MCP_Adapters/mock_enrichment.py`
 
 ## Why this layer
 - decouples signal engine from specific providers
 - enables cache-first enrichment
-- enforces strict tool contracts before LLM or planner can consume outputs
+- enforces strict tool contracts before scoring/reporting consume outputs
 
 ## API Candidates (open/free tier)
 Configured in registry for staged integration:
@@ -76,7 +76,7 @@ Cache key format:
 Deferred tool call:
 
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent/MCP_Adapters/mcp_router.py \
+python3 MCP_Adapters/mcp_router.py \
   --tool virustotal_url \
   --ioc-type url \
   --value "https://example.com/login"
@@ -85,7 +85,7 @@ python3 /Users/gabe/Documents/Phishing_Triage_Agent/MCP_Adapters/mcp_router.py \
 Seed cache for local simulation:
 
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent/MCP_Adapters/mcp_router.py \
+python3 MCP_Adapters/mcp_router.py \
   --tool virustotal_url \
   --ioc-type url \
   --value "https://example.com/login" \
@@ -98,7 +98,7 @@ Then call again to verify cache hit.
 
 ## Environment
 Keys and mode defaults are configured in:
-- `/Users/gabe/Documents/Phishing_Triage_Agent/.env`
+- `.env`
 
 Suggested variables:
 - `URLSCAN_API_KEY`
@@ -116,4 +116,4 @@ Suggested variables:
 - `CUCKOO_POLL_INTERVAL_SECONDS` (default: `5`)
 
 Current runtime note:
-- `cuckoo_url_detonate` adapter exists but is intentionally not invoked by default playbook execution until local sandbox infrastructure is enabled.
+- `cuckoo_url_detonate` adapter exists but is not invoked by default unless detonation tooling is explicitly enabled.

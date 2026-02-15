@@ -4,7 +4,7 @@
 Produce bounded semantic phishing signals from normalized evidence while keeping tool execution and verdicting deterministic.
 
 Implementation file:
-- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Signal_Engine/semantic_signal_assessor.py`
+- `Signal_Engine/semantic_signal_assessor.py`
 
 ## What It Does
 1. Builds a controlled evidence envelope from normalized fields.
