@@ -103,7 +103,7 @@ cp .env.example .env
 | `ABUSEIPDB_API_KEY` | AbuseIPDB | Optional (`live`) | IP reputation and abuse confidence context. |
 | `OTX_API_KEY` | AlienVault OTX | Optional (`live`) | Additional indicator reputation/correlation context. |
 | `URLHAUS_AUTH_KEY` | URLhaus | Optional (`live`) | Supplemental malicious URL intel where available. |
-| `CUCKOO_API_TOKEN` | CAPE/Cuckoo (self-hosted) | Optional (`live`) | Sandbox detonation for attachment/URL workflows if CAPE/Cuckoo is enabled. |
+| `CUCKOO_API_TOKEN` | CAPE/Cuckoo (self-hosted) | Optional (`live`) (TURNED OFF) | Sandbox detonation for attachment/URL workflows if CAPE/Cuckoo is enabled. |
 
 Notes:
 - For quickest setup, `mock` mode + `OPENAI_API_KEY` is enough to run the full UI workflow.
