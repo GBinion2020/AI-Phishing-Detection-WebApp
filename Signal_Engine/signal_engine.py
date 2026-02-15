@@ -9,6 +9,7 @@ Consumes normalized envelope JSON and emits bounded signal outputs:
 from __future__ import annotations
 
 import argparse
+import base64
 import ipaddress
 import json
 import re
@@ -16,7 +17,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 
 SignalResult = dict[str, Any]
@@ -63,6 +64,13 @@ KNOWN_LINK_WRAPPER_HOSTS = {
     "urldefense.proofpoint.com",
     "linkprotect.cudasvc.com",
 }
+KNOWN_TRACKING_HOST_SUFFIXES = (
+    ".ct.sendgrid.net",
+    ".sendgrid.net",
+    ".mailchi.mp",
+    ".list-manage.com",
+    ".hubspotemail.net",
+)
 KNOWN_RELAY_DOMAIN_HINTS = {
     "outlook.com",
     "microsoft.com",
@@ -116,6 +124,13 @@ def _domains_related(a: str | None, b: str | None) -> bool:
     return a == b or a.endswith(f".{b}") or b.endswith(f".{a}") or _org_domain(a) == _org_domain(b)
 
 
+def _is_fqdn(value: str | None) -> bool:
+    domain = str(value or "").strip().lower().strip(".")
+    if not domain or "." not in domain:
+        return False
+    return bool(re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", domain))
+
+
 def _msg(envelope: dict[str, Any]) -> dict[str, Any]:
     return envelope.get("message_metadata", {})
 
@@ -148,6 +163,103 @@ def _signal(value: str, rationale: str, evidence: list[str] | None = None, tools
         "rationale": rationale,
         "tool_requirements": tools or [],
     }
+
+
+def _is_known_tracking_wrapper_host(host: str | None) -> bool:
+    h = str(host or "").strip().lower().strip(".")
+    if not h:
+        return False
+    if h in KNOWN_LINK_WRAPPER_HOSTS:
+        return True
+    return any(h.endswith(suffix) for suffix in KNOWN_TRACKING_HOST_SUFFIXES)
+
+
+def _auth_all_pass(envelope: dict[str, Any]) -> bool:
+    auth = envelope.get("auth_summary", {}) or {}
+
+    def _norm(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    spf_result = _norm((auth.get("spf") or {}).get("result"))
+    dmarc = auth.get("dmarc") or {}
+    dmarc_result = _norm(dmarc.get("result"))
+    aligned = dmarc.get("aligned")
+
+    dkim_rows = auth.get("dkim") or []
+    dkim_results = [_norm((row or {}).get("result")) for row in dkim_rows if isinstance(row, dict)]
+    dkim_pass = bool(dkim_results) and "fail" not in dkim_results and any(r == "pass" for r in dkim_results)
+
+    if aligned in {None, "unknown"}:
+        aligned_ok = dmarc_result == "pass"
+    else:
+        aligned_ok = bool(aligned)
+
+    return spf_result == "pass" and dmarc_result == "pass" and dkim_pass and aligned_ok
+
+
+def _marketing_template_context(envelope: dict[str, Any]) -> bool:
+    headers = _headers(envelope)
+    if any(headers.get(h) for h in ("list-unsubscribe", "list-unsubscribe-post", "list-id")):
+        return True
+
+    urls = _urls(envelope)
+    if any(_is_known_tracking_wrapper_host(urlparse(str(u.get("normalized") or u.get("url") or "")).hostname) for u in urls):
+        if _auth_all_pass(envelope):
+            return True
+
+    body = _body_text(envelope)
+    if "unsubscribe" in body and any(tok in body for tok in ("job alert", "newsletter", "manage preferences", "view in browser")):
+        return True
+    return False
+
+
+def _sender_related_domain_hints(envelope: dict[str, Any]) -> set[str]:
+    msg = _msg(envelope)
+    from_domain = str((msg.get("from") or {}).get("domain") or "").strip().lower()
+    return_path = str(msg.get("return_path") or "").strip().lower()
+    return_domain = _extract_domain_from_email(return_path)
+    dkim_domains = {
+        str((row or {}).get("domain") or "").strip().lower()
+        for row in (envelope.get("auth_summary", {}).get("dkim") or [])
+        if isinstance(row, dict)
+    }
+    return {d for d in {from_domain, return_domain, *dkim_domains} if d}
+
+
+def _is_sender_related_tracking_host(envelope: dict[str, Any], host: str | None) -> bool:
+    h = str(host or "").strip().lower().strip(".")
+    if not h:
+        return False
+    if _is_known_tracking_wrapper_host(h):
+        return True
+    if not (_auth_all_pass(envelope) and _marketing_template_context(envelope)):
+        return False
+    hints = _sender_related_domain_hints(envelope)
+    return any(_domains_related(h, hint) for hint in hints)
+
+
+def _decode_percent_layers(value: str, max_rounds: int = 3) -> str:
+    out = str(value or "")
+    for _ in range(max_rounds):
+        nxt = unquote(out)
+        if nxt == out:
+            break
+        out = nxt
+    return out
+
+
+def _extract_wrapped_target_host(href: str) -> str:
+    parsed = urlparse(str(href or ""))
+    query = parse_qs(parsed.query, keep_blank_values=False)
+    for key in ("url", "u", "target", "dest", "redirect", "next", "to", "redirect_url", "target_url", "r", "redirect_uri"):
+        values = query.get(key) or []
+        for raw in values:
+            decoded = _decode_percent_layers(raw)
+            target = decoded if "://" in decoded else f"https://{decoded}"
+            host = (urlparse(target).hostname or "").strip().lower()
+            if host:
+                return host
+    return ""
 
 
 def identity_reply_to_mismatch(envelope: dict[str, Any]) -> SignalResult:
@@ -201,9 +313,11 @@ def identity_from_domain_mismatch_in_headers(envelope: dict[str, Any]) -> Signal
     message_id = msg.get("message_id") or ""
     m = re.search(r"@([^>\s]+)", message_id)
     if m:
-        candidates.add(m.group(1).lower().strip("."))
+        candidate = m.group(1).lower().strip(".")
+        if _is_fqdn(candidate):
+            candidates.add(candidate)
     return_domain = _extract_domain_from_email(msg.get("return_path"))
-    if return_domain:
+    if _is_fqdn(return_domain):
         candidates.add(return_domain)
     if not from_domain or not candidates:
         return _signal("unknown", "Insufficient header domains to compare", ["message_metadata.message_id", "message_metadata.return_path"])
@@ -259,7 +373,13 @@ def header_received_chain_anomaly(envelope: dict[str, Any]) -> SignalResult:
         chronological_issue = any(parsed_dates[idx] < parsed_dates[idx + 1] for idx in range(len(parsed_dates) - 1))
 
     # A single missing token in Received hops is common for legitimate infrastructure.
-    anomaly = missing_fields >= 3 or chronological_issue
+    if missing_fields >= 3 and not chronological_issue and _auth_all_pass(envelope):
+        return _signal(
+            "false",
+            f"minor_missing_fields={missing_fields} with passing SPF/DKIM/DMARC+alignment",
+            ["message_metadata.received_chain", "auth_summary"],
+        )
+    anomaly = missing_fields >= 5 or chronological_issue
     rationale_parts = []
     if missing_fields:
         rationale_parts.append(f"missing_fields={missing_fields}")
@@ -350,19 +470,13 @@ def url_display_text_mismatch(envelope: dict[str, Any]) -> SignalResult:
         if "http" in clean_text or "www." in clean_text:
             href_host = (urlparse(href).hostname or "").lower()
             text_host = (urlparse(clean_text).hostname or "").lower()
-            if href_host in KNOWN_LINK_WRAPPER_HOSTS:
-                q = urlparse(href).query
-                wrapped_target = re.search(r"(?:^|[&?])url=([^&]+)", q, flags=re.IGNORECASE)
-                if wrapped_target:
-                    try:
-                        from urllib.parse import unquote
-
-                        decoded = unquote(wrapped_target.group(1))
-                        wrapped_host = (urlparse(decoded).hostname or "").lower()
-                    except Exception:
-                        wrapped_host = ""
-                    if wrapped_host and wrapped_host == text_host:
-                        continue
+            if _is_known_tracking_wrapper_host(href_host):
+                wrapped_host = _extract_wrapped_target_host(href)
+                if wrapped_host and wrapped_host == text_host:
+                    continue
+                # Known wrapper hosts can conceal destination in encoded payloads.
+                # Avoid flagging mismatch solely due wrapper indirection.
+                continue
             if href_host and text_host and href_host != text_host:
                 return _signal("true", f"Anchor text host '{text_host}' differs from href host '{href_host}'", ["mime_parts.body_extraction.text_html"])
     return _signal("false", "No link text/href mismatch detected", ["mime_parts.body_extraction.text_html"])
@@ -372,7 +486,7 @@ def url_multiple_redirect_pattern_in_path(envelope: dict[str, Any]) -> SignalRes
     redirect_keys = {"url", "redirect", "next", "target", "dest", "continue"}
     for u in _urls(envelope):
         parsed = urlparse(u.get("normalized") or u.get("url") or "")
-        if (parsed.hostname or "").lower() in KNOWN_LINK_WRAPPER_HOSTS:
+        if _is_known_tracking_wrapper_host((parsed.hostname or "").lower()):
             continue
         query = parsed.query.lower()
         hits = sum(1 for k in redirect_keys if f"{k}=" in query)
@@ -382,13 +496,21 @@ def url_multiple_redirect_pattern_in_path(envelope: dict[str, Any]) -> SignalRes
 
 
 def url_long_obfuscated_string(envelope: dict[str, Any]) -> SignalResult:
+    marketing_related_hits = 0
     for u in _urls(envelope):
-        host = (urlparse(u.get("normalized") or "").hostname or "").lower()
-        if host in KNOWN_LINK_WRAPPER_HOSTS:
+        host = (urlparse(u.get("normalized") or u.get("url") or "").hostname or "").lower()
+        if _is_sender_related_tracking_host(envelope, host):
+            marketing_related_hits += 1
             continue
         candidate = f"{u.get('path', '')}?{urlparse(u.get('normalized') or '').query}"
         if len(candidate) > 120 and re.search(r"[A-Za-z0-9]{30,}", candidate):
             return _signal("true", "Long potentially obfuscated URL segment detected", [u.get("evidence_id", "entities.urls")])
+    if marketing_related_hits > 0:
+        return _signal(
+            "false",
+            "Long URL paths were limited to authenticated sender-related marketing tracking links",
+            ["entities.urls", "auth_summary", "message_metadata.headers.list-unsubscribe"],
+        )
     return _signal("false", "No long obfuscated URL segments detected", ["entities.urls"])
 
 
@@ -490,6 +612,26 @@ def content_html_form_embedded(envelope: dict[str, Any]) -> SignalResult:
 def content_hidden_text_or_css(envelope: dict[str, Any]) -> SignalResult:
     html = envelope.get("mime_parts", {}).get("body_extraction", {}).get("text_html", "").lower()
     markers = [token for token in ("display:none", "visibility:hidden", "font-size:0", "opacity:0") if token in html]
+    if markers and _auth_all_pass(envelope) and _marketing_template_context(envelope):
+        suspicious_overlay = any(
+            token in html
+            for token in (
+                "type=\"password\"",
+                "type='password'",
+                "<form",
+                "<script",
+                "javascript:",
+                "data:text/html;base64",
+                "verify account",
+                "reset your password",
+            )
+        )
+        if not suspicious_overlay:
+            return _signal(
+                "false",
+                "Hidden preheader/preview CSS markers are consistent with authenticated marketing templates",
+                ["mime_parts.body_extraction.text_html", "auth_summary", "message_metadata.headers.list-unsubscribe"],
+            )
     if len(markers) >= 2:
         return _signal("true", f"Multiple hidden CSS/text markers found: {markers}", ["mime_parts.body_extraction.text_html"])
     if len(markers) == 1:
@@ -607,8 +749,37 @@ def behavior_bulk_recipient_pattern(envelope: dict[str, Any]) -> SignalResult:
 
 def evasion_base64_encoded_html(envelope: dict[str, Any]) -> SignalResult:
     html = envelope.get("mime_parts", {}).get("body_extraction", {}).get("text_html", "")
-    found = bool(re.search(r"[A-Za-z0-9+/]{200,}={0,2}", html))
-    return _signal("true" if found else "false", "Long base64-like sequence found in HTML" if found else "No long base64-like sequence found", ["mime_parts.body_extraction.text_html"])
+    html_lower = html.lower()
+    if "data:text/html;base64," in html_lower or "data:application/octet-stream;base64," in html_lower:
+        return _signal("true", "Embedded base64 data URI found in HTML", ["mime_parts.body_extraction.text_html"])
+
+    suspicious_tokens = []
+    for token in re.findall(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{220,}={0,2}(?![A-Za-z0-9+/=])", html):
+        raw = token.strip()
+        if len(raw) % 4 != 0:
+            continue
+        if "http" in raw.lower():
+            continue
+        if (raw.count("+") + raw.count("/") + raw.count("=")) < 4:
+            continue
+        try:
+            base64.b64decode(raw, validate=True)
+        except Exception:
+            continue
+        suspicious_tokens.append(raw)
+        break
+
+    if not suspicious_tokens:
+        return _signal("false", "No long base64-like sequence found", ["mime_parts.body_extraction.text_html"])
+
+    if _auth_all_pass(envelope) and _marketing_template_context(envelope):
+        return _signal(
+            "unknown",
+            "Base64-like template payload observed in authenticated marketing email; not treated as evasion alone",
+            ["mime_parts.body_extraction.text_html", "auth_summary", "message_metadata.headers.list-unsubscribe"],
+        )
+
+    return _signal("true", "Long base64-like sequence found in HTML", ["mime_parts.body_extraction.text_html"])
 
 
 def evasion_zero_width_characters(envelope: dict[str, Any]) -> SignalResult:

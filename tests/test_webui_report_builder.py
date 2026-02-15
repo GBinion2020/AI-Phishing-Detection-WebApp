@@ -11,6 +11,16 @@ class _LLMDisabled:
     enabled = False
 
 
+class _LLMStub:
+    enabled = True
+
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def call_json(self, **_kwargs):
+        return self._payload
+
+
 class WebReportBuilderTests(unittest.TestCase):
     def test_fallback_report_structure(self) -> None:
         envelope = {
@@ -67,8 +77,11 @@ class WebReportBuilderTests(unittest.TestCase):
         self.assertEqual(attachments_panel.get("title"), "No attachments found")
         self.assertIn("subject_level", report)
         self.assertIn("body_level", report)
+        self.assertIn("primary_threat_tag", report)
+        self.assertIn("threat_tags", report)
+        self.assertGreaterEqual(len(report.get("threat_tags") or []), 1)
 
-    def test_semantic_true_overrides_clean_ioc_outcomes(self) -> None:
+    def test_non_sender_semantic_signal_does_not_force_sender_domain_suspicious(self) -> None:
         envelope = {
             "case_id": "case_456",
             "message_metadata": {
@@ -106,8 +119,140 @@ class WebReportBuilderTests(unittest.TestCase):
         domain_panel = next((x for x in report["indicator_panels"] if x.get("id") == "domains"), {})
         domain_items = domain_panel.get("items", [])
         self.assertGreaterEqual(len(domain_items), 1)
-        self.assertEqual(domain_items[0].get("outcome"), "could_be_malicious")
+        self.assertEqual(domain_items[0].get("outcome"), "not_malicious")
         self.assertGreaterEqual(len(report.get("analysis_details") or []), 1)
+
+    def test_suspicious_snippets_require_actual_suspicious_language(self) -> None:
+        envelope = {
+            "case_id": "case_789",
+            "message_metadata": {
+                "subject": "Career opportunities",
+                "from": {"address": "alerts@example.com", "domain": "example.com"},
+            },
+            "mime_parts": {
+                "body_extraction": {
+                    "text_plain": "Hi there Gabriel,\nWe found new roles you may like.\nUnsubscribe any time.",
+                    "text_html": "<p>Hi there Gabriel</p>",
+                }
+            },
+            "entities": {"urls": [], "domains": [{"domain": "example.com"}], "ips": []},
+            "attachments": [],
+            "auth_summary": {
+                "spf": {"result": "pass"},
+                "dmarc": {"result": "pass", "aligned": True},
+                "dkim": [{"result": "pass"}],
+            },
+        }
+        result = {"case_id": "case_789", "final_score": {"verdict": "suspicious", "risk_score": 24, "confidence_score": 0.75}}
+
+        report = build_web_report(envelope=envelope, result=result, llm=_LLMDisabled())
+        self.assertEqual(report.get("analysis_snippets"), [])
+
+    def test_domain_panel_level_matches_domain_item_outcomes(self) -> None:
+        envelope = {
+            "case_id": "case_321",
+            "message_metadata": {
+                "subject": "Monthly newsletter",
+                "from": {"address": "news@example.com", "domain": "example.com"},
+            },
+            "mime_parts": {
+                "body_extraction": {
+                    "text_plain": "Newsletter update. Unsubscribe any time.",
+                }
+            },
+            "entities": {"urls": [], "domains": [{"domain": "example.com"}], "ips": []},
+            "attachments": [],
+        }
+        result = {
+            "case_id": "case_321",
+            "final_score": {"verdict": "benign", "risk_score": 5, "confidence_score": 0.92},
+            "final_signals": {
+                "signals": {
+                    "identity.lookalike_domain_confirmed": {
+                        "kind": "deterministic",
+                        "value": "true",
+                        "rationale": "Legacy signal present",
+                        "evidence": ["entities.domains"],
+                    }
+                }
+            },
+        }
+
+        report = build_web_report(envelope=envelope, result=result, llm=_LLMDisabled())
+        domain_panel = next((x for x in report["indicator_panels"] if x.get("id") == "domains"), {})
+        self.assertEqual(domain_panel.get("level"), "green")
+        self.assertEqual(domain_panel.get("title"), "Domains look benign")
+
+    def test_marketing_key_points_drop_tracking_obfuscation_and_dedupe_urgency(self) -> None:
+        envelope = {
+            "case_id": "case_654",
+            "message_metadata": {
+                "subject": "Time is running out for your Toyota offer",
+                "from": {"address": "updates@dealer.example.com", "domain": "dealer.example.com"},
+                "headers": {"list-unsubscribe": "<mailto:unsubscribe@example.com>"},
+            },
+            "mime_parts": {
+                "body_extraction": {
+                    "text_plain": "Hi Gabriel,\nTime is running out. View latest offers.\nUnsubscribe anytime.",
+                }
+            },
+            "entities": {
+                "urls": [{"normalized": "https://u999.ct.sendgrid.net/ls/click?upn=abc", "domain": "u999.ct.sendgrid.net"}],
+                "domains": [{"domain": "dealer.example.com"}, {"domain": "u999.ct.sendgrid.net"}],
+                "ips": [],
+            },
+            "attachments": [],
+            "auth_summary": {
+                "spf": {"result": "pass"},
+                "dmarc": {"result": "pass", "aligned": True},
+                "dkim": [{"result": "pass"}],
+            },
+        }
+        result = {
+            "case_id": "case_654",
+            "final_score": {"verdict": "suspicious", "risk_score": 24, "confidence_score": 0.75},
+            "final_signals": {
+                "signals": {
+                    "semantic.coercive_language": {
+                        "kind": "non_deterministic",
+                        "value": "true",
+                        "rationale": "Subject uses urgency/pressure language.",
+                        "evidence": ["message_metadata.subject"],
+                    },
+                    "url.long_obfuscated_string": {
+                        "kind": "deterministic",
+                        "value": "true",
+                        "rationale": "Long wrapped tracking URL.",
+                        "evidence": ["entities.urls"],
+                    },
+                }
+            },
+        }
+        llm_payload = {
+            "summary_sentences": [
+                "This message appears suspicious and needs review.",
+                "Some cues resemble marketing traffic while urgency language remains present.",
+            ],
+            "key_points": [
+                "Many long obfuscated redirect/tracking URLs were observed in the message.",
+                "Subject uses urgency/pressure language ('time is running out') which is coercive in tone.",
+                "Urgent/coercive subject and hidden/obfuscated body content indicate elevated risk.",
+            ],
+            "sender_summary": "Sender identity was reviewed.",
+            "subject_level": "yellow",
+            "subject_analysis": "Subject uses urgency wording and should be reviewed.",
+            "body_level": "green",
+            "body_analysis": "Body appears promotional and not overtly malicious.",
+            "urls_overview": "URLs were reviewed.",
+            "domains_overview": "Domains were reviewed.",
+            "ips_overview": "IPs were reviewed.",
+            "attachments_overview": "Attachments were reviewed.",
+        }
+
+        report = build_web_report(envelope=envelope, result=result, llm=_LLMStub(llm_payload))
+        self.assertTrue(all("obfuscated redirect/tracking" not in kp.lower() for kp in report["key_points"]))
+        urgent_mentions = [x for x in report.get("evidence_highlights", []) if "urgent" in str(x.get("detail", "")).lower()]
+        self.assertLessEqual(len(urgent_mentions), 1)
 
 
 if __name__ == "__main__":

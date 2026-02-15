@@ -21,7 +21,9 @@ body {
   font-family: 'Plus Jakarta Sans', 'Avenir Next', 'Helvetica Neue', sans-serif;
   background: linear-gradient(180deg, #f8faff 0%, #f2f5fa 100%);
   color: #10203a;
-  font-size: 13px;
+  font-size: 12.5px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 .mono {
@@ -33,7 +35,7 @@ body {
 }
 
 .panel-card {
-  @apply rounded-2xl border border-slate-200 bg-white shadow-sm;
+  @apply rounded-2xl border border-slate-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.06),0_10px_24px_rgba(15,23,42,0.04)];
 }
 
 .transition-panel {
@@ -49,8 +51,8 @@ body {
   position: relative;
   display: grid;
   place-items: center;
-  width: 170px;
-  height: 170px;
+  width: 160px;
+  height: 160px;
   border-radius: 9999px;
   border: 1px solid #e3eaf4;
   background: conic-gradient(var(--ring-color, #8ea2bf) var(--ring-angle, 0deg), #e8edf7 0deg);
@@ -59,7 +61,7 @@ body {
 .risk-ring::after {
   content: '';
   position: absolute;
-  inset: 16px;
+  inset: 15px;
   border-radius: 9999px;
   background: #ffffff;
   border: 1px solid #edf2f8;
@@ -79,7 +81,7 @@ body {
 }
 
 .badge {
-  @apply inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold;
+  @apply inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold;
 }
 
 .badge-danger {
@@ -128,7 +130,7 @@ body {
 }
 
 .queue-card {
-  height: 184px;
+  height: 176px;
   display: flex;
   flex-direction: column;
 }

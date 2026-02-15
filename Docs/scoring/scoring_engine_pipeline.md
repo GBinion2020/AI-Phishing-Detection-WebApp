@@ -27,6 +27,10 @@ For each signal with `value=true`:
 3. compute semantic blend boost from number of true `semantic.*` signals,
 4. clamp final risk to configured min/max.
 
+Important:
+- The scoring engine remains additive/deterministic.
+- False-positive control for authenticated ESP marketing patterns is handled upstream in the signal engine/semantic assessor by normalizing specific signals to `false` or `unknown` when evidence is benign-context only.
+
 Verdict thresholds:
 - `risk <= benign_max` -> `benign`
 - `risk >= phish_min` -> `phish`

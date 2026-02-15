@@ -4,7 +4,7 @@
 Normalization converts a raw `.eml` file into the stable Envelope JSON contract used by the signal engine and later investigation stages.
 
 Implementation file:
-- `/Users/gabe/Documents/Phishing_Triage_Agent/src/Ingestion/intake.py`
+- `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/src/Ingestion/intake.py`
 
 ## Envelope Contract
 Top-level fields currently emitted:
@@ -25,8 +25,9 @@ Top-level fields currently emitted:
 4. Capture decoded headers map for signal logic.
 5. Extract auth summary from `Authentication-Results` (SPF/DKIM/DMARC).
 6. Extract entities (URLs, domains, emails, IPs) from body, headers, and attachment strings.
-7. Build MIME part summary and static attachment metadata.
-8. Attach warnings for missing headers or decode anomalies.
+7. Extract explicit sender-IP evidence from transport headers (`Received`, `X-Mailgun-Sending-Ip`, `Received-SPF`, `Authentication-Results client-ip`) and merge into `entities.ips`.
+8. Build MIME part summary and static attachment metadata.
+9. Attach warnings for missing headers or decode anomalies.
 
 ## Output Characteristics
 - deterministic structure for downstream modules
@@ -35,14 +36,15 @@ Top-level fields currently emitted:
 
 ## CLI Usage
 ```bash
-python3 /Users/gabe/Documents/Phishing_Triage_Agent/src/Ingestion/intake.py \
-  --eml /Users/gabe/Documents/Phishing_Triage_Agent/Sample_Emails/Sample_Email.eml \
-  --out /Users/gabe/Documents/Phishing_Triage_Agent/Sample_Emails/Sample_Email.envelope.json
+python3 /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/src/Ingestion/intake.py \
+  --eml /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Sample_Email.eml \
+  --out /Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Sample_Emails/Sample_Email.envelope.json
 ```
 
 ## Known Limits
 - Auth parsing depends on available `Authentication-Results` header quality.
 - Received chain parsing is best-effort and may not fully normalize malformed hops.
+- Sender-IP extraction is header-driven and only as complete as available transport headers.
 - Some advanced signals still require external connectors in later phases.
 
 ## Maintenance Notes

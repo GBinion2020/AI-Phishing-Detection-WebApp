@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import string
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -16,6 +17,41 @@ OUTCOME_PRIORITY = {
     "known_phishing_ioc": 3,
     "could_be_malicious": 2,
     "not_malicious": 1,
+}
+_PUNCT_TRANSLATION = str.maketrans({ch: " " for ch in string.punctuation})
+_FINDING_STOPWORDS = {
+    "about",
+    "across",
+    "alert",
+    "analysis",
+    "appears",
+    "based",
+    "body",
+    "campaign",
+    "content",
+    "coercive",
+    "domain",
+    "domains",
+    "email",
+    "evidence",
+    "finding",
+    "hidden",
+    "indicates",
+    "indicator",
+    "indicators",
+    "language",
+    "linked",
+    "malicious",
+    "message",
+    "review",
+    "risk",
+    "signals",
+    "snippet",
+    "subject",
+    "suspicious",
+    "tracking",
+    "urgent",
+    "urls",
 }
 
 SEMANTIC_DETAIL_LABELS = {
@@ -87,6 +123,7 @@ Analysis focus:
 - malicious wording in subject/body tied to phishing campaigns,
 - embedded redirect/obfuscated URL patterns,
 - mismatch between body/subject context and linked domains.
+- authenticated marketing patterns (SPF/DKIM/DMARC pass, mailing-list headers, ESP click tracking).
 
 Output rules:
 - Output JSON only using schema.
@@ -94,6 +131,12 @@ Output rules:
 - summary_sentences must be exactly two analyst-friendly sentences.
 - key_points must be exactly three short bullets.
 - Keep subject/body analysis to one sentence each.
+- subject_analysis must discuss only subject wording (no URLs, domains, auth headers, or IOC details).
+- body_analysis must discuss only body narrative/CTA language (no domains, auth headers, or IOC lists).
+- Do not classify normal ESP tracking wrappers as malicious by themselves.
+- Do not call a sender domain "lookalike" unless there is explicit typosquat/homoglyph evidence.
+- Do not treat hidden preheader CSS in authenticated marketing templates as attacker obfuscation by itself.
+- Never claim "no explicit sending IP" if sender IP evidence exists in headers or entities.
 """.strip()
 
 
@@ -125,6 +168,46 @@ def _normalize_level(value: str | None, fallback: str) -> str:
     return fallback
 
 
+def _normalize_threat_tags(final_score: dict[str, Any], classification: str) -> tuple[str | None, list[dict[str, Any]]]:
+    raw_tags = final_score.get("threat_tags") or []
+    normalized: list[dict[str, Any]] = []
+    for row in raw_tags:
+        if not isinstance(row, dict):
+            continue
+        tag_id = str(row.get("id") or "").strip()
+        label = str(row.get("label") or "").strip() or tag_id.replace("_", " ").title()
+        if not tag_id:
+            continue
+        severity = str(row.get("severity") or "medium").strip().lower()
+        if severity not in {"critical", "high", "medium", "low", "info"}:
+            severity = "medium"
+        confidence = str(row.get("confidence") or "medium").strip().lower()
+        if confidence not in {"high", "medium", "low"}:
+            confidence = "medium"
+        reasons = [str(item).strip() for item in (row.get("reasons") or []) if str(item).strip()]
+        normalized.append(
+            {
+                "id": tag_id,
+                "label": label,
+                "severity": severity,
+                "confidence": confidence,
+                "reasons": reasons[:3],
+            }
+        )
+    if normalized:
+        primary = str(final_score.get("primary_threat_tag") or normalized[0]["id"])
+        return primary, normalized[:6]
+
+    # Keep schema stable with deterministic fallback labels.
+    if classification == "malicious":
+        fallback = [{"id": "social_engineering_urgency", "label": "Social Engineering Urgency", "severity": "high", "confidence": "medium", "reasons": []}]
+    elif classification == "non_malicious":
+        fallback = [{"id": "graymail_promotional", "label": "Graymail Promotional", "severity": "info", "confidence": "medium", "reasons": []}]
+    else:
+        fallback = [{"id": "url_obfuscation_redirect", "label": "URL Obfuscation / Redirect", "severity": "medium", "confidence": "medium", "reasons": []}]
+    return fallback[0]["id"], fallback
+
+
 def _middle_ellipsis(value: str, max_len: int = 84) -> str:
     v = str(value or "").strip()
     if len(v) <= max_len:
@@ -149,6 +232,64 @@ def _sentence_safe_trim(text: str, max_chars: int) -> str:
     if idx >= 36:
         return clean[:idx].rstrip() + "…"
     return clean[: max_chars - 1].rstrip() + "…"
+
+
+def _finding_signature(text: str) -> set[str]:
+    tokens = str(text or "").lower().translate(_PUNCT_TRANSLATION).split()
+    return {tok for tok in tokens if len(tok) >= 4 and tok not in _FINDING_STOPWORDS}
+
+
+def _is_duplicate_finding(existing: list[set[str]], candidate_text: str, threshold: float = 0.6) -> bool:
+    cand = _finding_signature(candidate_text)
+    if not cand:
+        return False
+    for prior in existing:
+        if not prior:
+            continue
+        overlap = len(cand & prior) / float(min(len(cand), len(prior)))
+        if overlap >= threshold:
+            return True
+    return False
+
+
+def _is_tracking_obfuscation_key_point(text: str) -> bool:
+    low = str(text or "").lower()
+    has_obfuscation = "obfuscat" in low or "long url" in low or "long urls" in low
+    has_tracking = "tracking" in low or "redirect" in low or "wrapped link" in low
+    return has_obfuscation and has_tracking
+
+
+def _contains_no_ip_claim(text: str) -> bool:
+    low = str(text or "").lower()
+    return (
+        "no explicit sending ip" in low
+        or ("no sending ip" in low and "found" in low)
+        or "sending ip was not provided" in low
+    )
+
+
+def _is_unwarranted_lookalike_claim(text: str, result: dict[str, Any]) -> bool:
+    low = str(text or "").lower()
+    if "lookalike" not in low and "typosquat" not in low and "impersonat" not in low:
+        return False
+    return not _signal_true(result, "identity.lookalike_domain_confirmed")
+
+
+def _is_unwarranted_hidden_css_claim(text: str, result: dict[str, Any]) -> bool:
+    low = str(text or "").lower()
+    if "hidden content" not in low and "hidden css" not in low and "hidden text" not in low:
+        return False
+    return not _signal_true(result, "content.hidden_text_or_css")
+
+
+def _ips_overview_from_items(ip_items: list[dict[str, Any]]) -> str:
+    if not ip_items:
+        return "No sender IP was extracted from headers."
+    first = str(ip_items[0].get("display_value") or ip_items[0].get("value") or "unknown")
+    flagged = [item for item in ip_items if str(item.get("outcome") or "") != "not_malicious"]
+    if flagged:
+        return f"Sender IPs were extracted (for example {first}); at least one IP requires analyst review."
+    return f"Sender IPs were extracted from headers (for example {first}) and did not show strong malicious intel."
 
 
 def _format_url_display(value: str) -> str:
@@ -360,13 +501,18 @@ def _extract_suspicious_snippets(plain: str, classification: str) -> list[str]:
     snippets: list[str] = []
     for line in lines:
         low = line.lower()
+        if len(low) <= 28 and (
+            low.startswith("hi ")
+            or low.startswith("hello ")
+            or low.startswith("dear ")
+            or low.startswith("thanks")
+            or low.startswith("thank you")
+        ):
+            continue
         if any(tok in low for tok in terms):
             snippets.append(_sentence_safe_trim(line, 180))
         if len(snippets) >= 4:
             break
-
-    if not snippets and classification != "non_malicious":
-        snippets = [_sentence_safe_trim(lines[0], 180)]
     return snippets[:4]
 
 
@@ -428,6 +574,101 @@ def _auth_failures_present(envelope: dict[str, Any]) -> bool:
     failed_values = {"fail", "softfail", "permerror", "temperror"}
     all_results = _results(auth.get("spf")) + _results(auth.get("dmarc")) + _results(auth.get("dkim"))
     return any(value in failed_values for value in all_results)
+
+
+def _auth_all_pass(envelope: dict[str, Any]) -> bool:
+    auth = envelope.get("auth_summary", {}) or {}
+
+    def _norm(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    spf_result = _norm((auth.get("spf") or {}).get("result"))
+    dmarc = auth.get("dmarc") or {}
+    dmarc_result = _norm(dmarc.get("result"))
+    aligned = dmarc.get("aligned")
+    dkim_rows = auth.get("dkim") or []
+    dkim_results = [_norm((row or {}).get("result")) for row in dkim_rows if isinstance(row, dict)]
+    dkim_pass = bool(dkim_results) and "fail" not in dkim_results and any(r == "pass" for r in dkim_results)
+    aligned_ok = dmarc_result == "pass" if aligned in {None, "unknown"} else bool(aligned)
+    return spf_result == "pass" and dmarc_result == "pass" and dkim_pass and aligned_ok
+
+
+def _marketing_context(envelope: dict[str, Any]) -> bool:
+    headers = ((envelope.get("message_metadata") or {}).get("headers") or {})
+    if any(headers.get(h) for h in ("list-unsubscribe", "list-unsubscribe-post", "list-id")):
+        return True
+    urls = ((envelope.get("entities") or {}).get("urls") or [])[:30]
+    if any("sendgrid" in str((u.get("domain") or "")).lower() for u in urls):
+        return True
+    plain = str((envelope.get("mime_parts", {}) or {}).get("body_extraction", {}).get("text_plain") or "").lower()
+    return "unsubscribe" in plain or "job alert" in plain or "manage preferences" in plain
+
+
+def _contains_ioc_references(text: str) -> bool:
+    low = str(text or "").lower()
+    return any(
+        token in low
+        for token in (
+            "url",
+            "domain",
+            "spf",
+            "dkim",
+            "dmarc",
+            "header",
+            "ioc",
+            "received chain",
+            "ip reputation",
+            "threat intel",
+        )
+    )
+
+
+def _heuristic_subject_body_assessment(
+    subject: str,
+    plain: str,
+    classification: str,
+    default_level: str,
+    marketing_context: bool,
+) -> tuple[str, str, str, str]:
+    subj = str(subject or "").lower()
+    body = str(plain or "").lower()
+    high_risk_tokens = ("password", "verify account", "login", "sign in", "wire transfer", "bank details", "gift card")
+    coercive_tokens = ("urgent", "immediately", "action required", "final notice", "suspended")
+    marketing_tokens = ("job", "career", "newsletter", "opportunities", "unsubscribe", "new roles")
+
+    if any(tok in subj for tok in high_risk_tokens):
+        subject_level = "red"
+        subject_analysis = "Subject includes direct credential/payment-style language consistent with phishing lures."
+    elif any(tok in subj for tok in coercive_tokens):
+        subject_level = "yellow"
+        subject_analysis = "Subject uses urgency-style wording that can pressure recipients to click quickly."
+    elif marketing_context or any(tok in subj for tok in marketing_tokens):
+        subject_level = "green"
+        subject_analysis = "Subject reads like routine marketing/recruiting content and is not inherently malicious."
+    else:
+        subject_level = default_level
+        subject_analysis = "Subject wording was reviewed for phishing pressure and deceptive cues."
+
+    if any(tok in body for tok in high_risk_tokens):
+        body_level = "red"
+        body_analysis = "Body language includes direct credential/payment prompts consistent with phishing intent."
+    elif any(tok in body for tok in coercive_tokens):
+        body_level = "yellow"
+        body_analysis = "Body language applies urgency pressure and warrants analyst review."
+    elif marketing_context or any(tok in body for tok in marketing_tokens):
+        body_level = "green"
+        body_analysis = "Body copy follows common marketing/recruiting messaging without explicit credential-harvest prompts."
+    elif classification == "malicious":
+        body_level = "red"
+        body_analysis = "Body narrative contains suspicious persuasion patterns that align with malicious classification."
+    elif classification == "suspicious":
+        body_level = "yellow"
+        body_analysis = "Body narrative has mixed signals and should be reviewed before trust."
+    else:
+        body_level = "green"
+        body_analysis = "Body narrative appears informational and non-malicious."
+
+    return subject_level, subject_analysis, body_level, body_analysis
 
 
 def _group_items_by_outcome(items: list[dict[str, Any]], label: str) -> list[dict[str, Any]]:
@@ -573,6 +814,7 @@ def _build_domain_items(
     semantic_sender_suspicious: bool,
     semantic_note: str,
     suspicious_url_domains: set[str] | None = None,
+    marketing_context: bool = False,
 ) -> list[dict[str, Any]]:
     msg = envelope.get("message_metadata", {}) or {}
     sender_domain = str((msg.get("from") or {}).get("domain") or "")
@@ -593,15 +835,16 @@ def _build_domain_items(
         semantic_override = False
 
         if sender_domain and dom.lower() == sender_domain.lower() and outcome != "known_phishing_ioc":
-            if semantic_sender_suspicious and outcome == "not_malicious":
-                outcome = "could_be_malicious"
-                reason = _sentence_safe_trim(semantic_note, 220)
-                semantic_override = True
-            elif auth_failures and outcome == "not_malicious":
-                outcome = "could_be_malicious"
-                reason = "Sender domain shows authentication failures and requires analyst review."
+            if not (marketing_context and _auth_all_pass(envelope)):
+                if semantic_sender_suspicious and outcome == "not_malicious":
+                    outcome = "could_be_malicious"
+                    reason = _sentence_safe_trim(semantic_note, 220)
+                    semantic_override = True
+                elif auth_failures and outcome == "not_malicious":
+                    outcome = "could_be_malicious"
+                    reason = "Sender domain shows authentication failures and requires analyst review."
 
-        if dom.lower() in suspicious_url_domains and outcome == "not_malicious":
+        if dom.lower() in suspicious_url_domains and outcome == "not_malicious" and not marketing_context:
             outcome = "could_be_malicious"
             reason = "Referenced by suspicious URL behavior and requires analyst review."
 
@@ -743,6 +986,7 @@ def build_web_report(
     final_score = result.get("final_score", {})
     classification = _map_classification(final_score.get("verdict"))
     default_level = _classification_to_level(classification)
+    primary_threat_tag, threat_tags = _normalize_threat_tags(final_score, classification)
 
     msg = envelope.get("message_metadata", {}) or {}
     sender = str((msg.get("from") or {}).get("address") or "unknown")
@@ -750,17 +994,27 @@ def build_web_report(
     sender_display_name = str((msg.get("from") or {}).get("display_name") or "")
     subject = str(msg.get("subject") or "(no subject)")
     plain = str((envelope.get("mime_parts", {}) or {}).get("body_extraction", {}).get("text_plain") or "")
+    marketing_context = _marketing_context(envelope)
+    auth_all_pass = _auth_all_pass(envelope)
 
     sender_suspicious = _sender_identity_suspicious(sender)
     semantic_url_suspicious = _signal_true(result, "semantic.body_url_intent_mismatch") or _signal_true(
         result, "semantic.url_subject_context_mismatch"
     )
     semantic_true = _semantic_true_signals(result)
-    semantic_global_suspicious = bool(semantic_true)
     semantic_sender_suspicious = _signal_true(result, "semantic.sender_name_deceptive") or _signal_true(
         result, "semantic.impersonation_narrative"
     )
     semantic_note = _semantic_override_note(semantic_true)
+    heuristic_subject_level, heuristic_subject_analysis, heuristic_body_level, heuristic_body_analysis = (
+        _heuristic_subject_body_assessment(
+            subject=subject,
+            plain=plain,
+            classification=classification,
+            default_level=default_level,
+            marketing_context=marketing_context and auth_all_pass,
+        )
+    )
 
     prompt_payload = {
         "classification_hint": classification,
@@ -771,6 +1025,8 @@ def build_web_report(
         "sender_display_name": sender_display_name,
         "subject": subject,
         "body_excerpt": plain[:3500],
+        "auth_summary": envelope.get("auth_summary", {}),
+        "mailing_list_headers_present": marketing_context,
         "urls": [
             {
                 "url": str(item.get("normalized") or item.get("url") or ""),
@@ -782,6 +1038,7 @@ def build_web_report(
             sid
             for sid, payload in ((result.get("final_signals") or {}).get("signals") or {}).items()
             if str(payload.get("value") or "") == "true"
+            and not (sid == "url.long_obfuscated_string" and marketing_context and auth_all_pass)
         ][:30],
         "instruction": "Generate concise analyst-facing UI text only.",
     }
@@ -843,9 +1100,10 @@ def build_web_report(
     domain_items = _build_domain_items(
         envelope,
         intel,
-        semantic_sender_suspicious or semantic_global_suspicious,
+        semantic_sender_suspicious,
         semantic_note,
         suspicious_url_domains=suspicious_url_domains,
+        marketing_context=marketing_context and auth_all_pass,
     )
     ip_items = _build_ip_items(
         envelope,
@@ -861,13 +1119,7 @@ def build_web_report(
     url_force_yellow = semantic_url_suspicious or _signal_true(result, "url.redirect_chain_detected")
     urls_level = _panel_level(url_items, force_red=url_force_red, force_yellow=url_force_yellow)
 
-    domains_force_red = _signal_true(result, "identity.lookalike_domain_confirmed")
-    domains_force_yellow = (
-        _signal_true(result, "identity.newly_registered_sender_domain")
-        or _signal_true(result, "url.domain_newly_registered")
-        or _signal_true(result, "identity.domain_not_owned_by_org")
-    )
-    domains_level = _panel_level(domain_items, force_red=domains_force_red, force_yellow=domains_force_yellow)
+    domains_level = _panel_level(domain_items)
 
     ips_level = _panel_level(ip_items, force_red=_signal_true(result, "infra.sending_ip_reputation_bad"))
 
@@ -892,8 +1144,10 @@ def build_web_report(
 
     ioc_items: list[dict[str, Any]] = []
     sender_outcome = "known_phishing_ioc" if sender_suspicious else "not_malicious"
-    if semantic_global_suspicious and sender_outcome == "not_malicious":
+    if semantic_sender_suspicious and sender_outcome == "not_malicious":
         sender_outcome = "could_be_malicious"
+    if marketing_context and auth_all_pass and sender_outcome != "known_phishing_ioc":
+        sender_outcome = "not_malicious"
     ioc_items.append(
         {
             "value": sender,
@@ -943,10 +1197,92 @@ def build_web_report(
         summary_sentences = _fallback_ai_copy(classification, default_level, sender_suspicious, semantic_url_suspicious)[
             "summary_sentences"
         ]
+    fallback_summary_sentences = _fallback_ai_copy(
+        classification,
+        default_level,
+        sender_suspicious,
+        semantic_url_suspicious,
+    )["summary_sentences"]
+    normalized_summaries: list[str] = []
+    for idx, sentence in enumerate(summary_sentences[:2]):
+        cleaned = _sentence_safe_trim(str(sentence), 260)
+        if not cleaned:
+            cleaned = fallback_summary_sentences[min(idx, len(fallback_summary_sentences) - 1)]
+        if ip_items and _contains_no_ip_claim(cleaned):
+            cleaned = fallback_summary_sentences[min(idx, len(fallback_summary_sentences) - 1)]
+        if _is_unwarranted_lookalike_claim(cleaned, result):
+            cleaned = fallback_summary_sentences[min(idx, len(fallback_summary_sentences) - 1)]
+        if _is_unwarranted_hidden_css_claim(cleaned, result):
+            cleaned = fallback_summary_sentences[min(idx, len(fallback_summary_sentences) - 1)]
+        if marketing_context and auth_all_pass and _is_tracking_obfuscation_key_point(cleaned):
+            cleaned = fallback_summary_sentences[min(idx, len(fallback_summary_sentences) - 1)]
+        normalized_summaries.append(cleaned)
+    summary_sentences = normalized_summaries
+    while len(summary_sentences) < 2:
+        summary_sentences.append(fallback_summary_sentences[min(len(summary_sentences), len(fallback_summary_sentences) - 1)])
 
-    key_points = [_sentence_safe_trim(str(x), 220) for x in (ai_doc.get("key_points") or [])[:3]]
+    raw_key_points = (ai_doc.get("key_points") or [])[:6]
+    key_points: list[str] = []
+    key_signatures: list[set[str]] = []
+    for point in raw_key_points:
+        trimmed = _sentence_safe_trim(str(point), 220)
+        if not trimmed:
+            continue
+        if _is_unwarranted_lookalike_claim(trimmed, result):
+            continue
+        if _is_unwarranted_hidden_css_claim(trimmed, result):
+            continue
+        if marketing_context and auth_all_pass and _is_tracking_obfuscation_key_point(trimmed):
+            continue
+        if _is_duplicate_finding(key_signatures, trimmed):
+            continue
+        key_points.append(trimmed)
+        key_signatures.append(_finding_signature(trimmed))
+        if len(key_points) >= 3:
+            break
+
+    fallback_points = _fallback_ai_copy(classification, default_level, sender_suspicious, semantic_url_suspicious)["key_points"]
+    for point in fallback_points:
+        if len(key_points) >= 3:
+            break
+        trimmed = _sentence_safe_trim(str(point), 220)
+        if not trimmed:
+            continue
+        if marketing_context and auth_all_pass and _is_tracking_obfuscation_key_point(trimmed):
+            continue
+        if _is_duplicate_finding(key_signatures, trimmed):
+            continue
+        key_points.append(trimmed)
+        key_signatures.append(_finding_signature(trimmed))
+
     while len(key_points) < 3:
-        key_points.append("Evidence was reviewed before final classification.")
+        filler = "Evidence was reviewed before final classification."
+        if _is_duplicate_finding(key_signatures, filler):
+            filler = "Analyst validation is recommended before final action."
+        key_points.append(filler)
+        key_signatures.append(_finding_signature(filler))
+
+    ai_subject_level = _normalize_level(ai_doc.get("subject_level"), heuristic_subject_level)
+    ai_subject_analysis = _sentence_safe_trim(
+        str(ai_doc.get("subject_analysis") or heuristic_subject_analysis),
+        260,
+    )
+    ai_body_level = _normalize_level(ai_doc.get("body_level"), heuristic_body_level)
+    ai_body_analysis = _sentence_safe_trim(
+        str(ai_doc.get("body_analysis") or heuristic_body_analysis),
+        260,
+    )
+
+    if marketing_context and auth_all_pass:
+        subject_level = heuristic_subject_level
+        subject_analysis = heuristic_subject_analysis
+        body_level = heuristic_body_level
+        body_analysis = heuristic_body_analysis
+    else:
+        subject_level = heuristic_subject_level if _contains_ioc_references(ai_subject_analysis) else ai_subject_level
+        subject_analysis = heuristic_subject_analysis if _contains_ioc_references(ai_subject_analysis) else ai_subject_analysis
+        body_level = heuristic_body_level if _contains_ioc_references(ai_body_analysis) else ai_body_level
+        body_analysis = heuristic_body_analysis if _contains_ioc_references(ai_body_analysis) else ai_body_analysis
 
     domain_summary, domain_groups = _build_domain_groups(envelope, sender_domain, domain_items)
     url_groups = _group_items_by_outcome(url_items, "URLs")
@@ -979,7 +1315,7 @@ def build_web_report(
             "label": "IPs",
             "title": _panel_title("IPs", ips_level),
             "level": ips_level,
-            "summary": _sentence_safe_trim(str(ai_doc.get("ips_overview") or "IP indicators were reviewed."), 260),
+            "summary": _sentence_safe_trim(_ips_overview_from_items(ip_items), 260),
             "items": ip_items,
             "groups": ip_groups,
             "empty_note": "No sender IP was extracted from this email." if not ip_items else None,
@@ -1007,7 +1343,12 @@ def build_web_report(
     body_preview = _build_body_preview(plain, analysis_snippets)
 
     evidence_highlights: list[dict[str, Any]] = []
+    highlight_signatures: list[set[str]] = []
     for idx, point in enumerate(key_points[:3], start=1):
+        signature_text = f"key finding {idx} {point}"
+        if _is_duplicate_finding(highlight_signatures, signature_text):
+            continue
+        highlight_signatures.append(_finding_signature(signature_text))
         evidence_highlights.append(
             {
                 "id": f"kp_{idx}",
@@ -1024,6 +1365,10 @@ def build_web_report(
             outcome = "not_malicious"
         else:
             outcome = "could_be_malicious"
+        signature_text = f"{detail.get('title') or ''} {detail.get('detail') or ''}"
+        if _is_duplicate_finding(highlight_signatures, signature_text):
+            continue
+        highlight_signatures.append(_finding_signature(signature_text))
         evidence_highlights.append(
             {
                 "id": f"semantic_{detail.get('signal_id') or len(evidence_highlights)}",
@@ -1046,6 +1391,8 @@ def build_web_report(
         "generated_at": _now_iso(),
         "source": source,
         "classification": classification,
+        "primary_threat_tag": primary_threat_tag,
+        "threat_tags": threat_tags,
         "result_heading": result_heading_map.get(classification, "This appears suspicious."),
         "analyst_summary": (
             f"{_sentence_safe_trim(summary_sentences[0], 260)} "
@@ -1057,16 +1404,10 @@ def build_web_report(
         "subject_line": subject,
         "sender_address": sender,
         "sender_domain": sender_domain,
-        "subject_level": _normalize_level(ai_doc.get("subject_level"), default_level),
-        "subject_analysis": _sentence_safe_trim(
-            str(ai_doc.get("subject_analysis") or "Subject wording was reviewed."),
-            260,
-        ),
-        "body_level": _normalize_level(ai_doc.get("body_level"), default_level),
-        "body_analysis": _sentence_safe_trim(
-            str(ai_doc.get("body_analysis") or "Body wording was reviewed."),
-            260,
-        ),
+        "subject_level": subject_level,
+        "subject_analysis": subject_analysis,
+        "body_level": body_level,
+        "body_analysis": body_analysis,
         "body_preview": body_preview,
         "body_plain": plain,
         "analysis_details": analysis_details,

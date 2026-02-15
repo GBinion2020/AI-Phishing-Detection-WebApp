@@ -184,6 +184,14 @@ function semanticLevelBadge(level) {
   return 'badge badge-warn'
 }
 
+function threatTagBadgeClass(severity) {
+  const s = String(severity || '').toLowerCase()
+  if (s === 'critical' || s === 'high') return 'badge badge-danger'
+  if (s === 'medium') return 'badge badge-warn'
+  if (s === 'info') return 'badge badge-neutral'
+  return 'badge badge-safe'
+}
+
 function buildEvidenceHighlights(report, keyPoints, classification) {
   const provided = Array.isArray(report?.evidence_highlights) ? report.evidence_highlights : []
   if (provided.length > 0) {
@@ -266,10 +274,10 @@ function RiskRing({ riskScore, classification }) {
       }}
     >
       <div className="relative z-10 flex flex-col items-center justify-center text-center leading-none">
-        <span className={`tabular-nums text-[2.6rem] font-extrabold ${classificationToneClass(classification)}`}>
+        <span className={`tabular-nums text-[2.25rem] font-extrabold ${classificationToneClass(classification)}`}>
           {showDecimal ? displayRisk.toFixed(1) : Math.round(displayRisk)}
         </span>
-        <span className="mt-1 text-[0.74rem] font-bold tracking-[0.14em] text-slate-400">RISK</span>
+        <span className="mt-1 text-[0.7rem] font-bold tracking-[0.14em] text-slate-400">RISK</span>
       </div>
     </div>
   )
@@ -329,8 +337,8 @@ function ModalShell({ title, subtitle, open, onClose, children }) {
       <div className="relative z-10 w-full max-w-6xl rounded-2xl border border-slate-200 bg-white p-4 shadow-soft">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
-            <h3 className="m-0 text-[1.85rem] font-extrabold text-slate-800">{title}</h3>
-            {subtitle ? <p className="mt-1 text-[1rem] text-slate-500">{subtitle}</p> : null}
+            <h3 className="m-0 text-[1.45rem] font-extrabold text-slate-800">{title}</h3>
+            {subtitle ? <p className="mt-1 text-[0.95rem] text-slate-500">{subtitle}</p> : null}
           </div>
           <button
             type="button"
@@ -628,6 +636,7 @@ export default function App() {
     report.body_preview ||
     (analysisSnippets.length > 0 ? analysisSnippets.slice(0, 2).join('\n') : report.body_plain || '(No plain body text extracted)')
   const evidenceHighlights = buildEvidenceHighlights(report, keyPoints, classification)
+  const threatTags = Array.isArray(report?.threat_tags) ? report.threat_tags : []
   const runtime = activeCase?.runtime || { stages: [], messages: [] }
 
   const caseQueueTitle = `${cases.length} investigation${cases.length === 1 ? '' : 's'}`
@@ -642,15 +651,15 @@ export default function App() {
     : []
 
   return (
-    <div className="mx-auto max-w-[1520px] px-3 pb-5 pt-2 text-[13px] lg:text-[13px]">
+    <div className="mx-auto max-w-[1500px] px-3 pb-5 pt-2 text-[12px] lg:text-[12px]">
       <header className="panel-card mb-3 flex items-center justify-between gap-3 px-5 py-3">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#0a1736] text-slate-100">
             <Shield className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="m-0 text-[2.05rem] font-extrabold leading-tight text-[#10203a]">{config.app_name || 'Phishing Triage'}</h1>
-            <p className="m-0 text-[0.92rem] font-semibold text-slate-400">AI-Powered Email Investigation</p>
+            <h1 className="m-0 text-[1.8rem] font-extrabold leading-tight text-[#10203a]">{config.app_name || 'Phishing Triage'}</h1>
+            <p className="m-0 text-[0.86rem] font-semibold text-slate-400">AI-Powered Email Investigation</p>
           </div>
         </div>
         <button
@@ -671,8 +680,8 @@ export default function App() {
                   <FileText className="h-5 w-5" />
                 </div>
                 <div>
-                  <h2 className="m-0 text-[2.35rem] font-extrabold leading-tight text-[#10203a]">Analyze New Email</h2>
-                  <p className="m-0 text-[1.06rem] text-slate-400">Drop an .eml file to begin investigation</p>
+                  <h2 className="m-0 text-[1.95rem] font-extrabold leading-tight text-[#10203a]">Analyze New Email</h2>
+                  <p className="m-0 text-[0.95rem] text-slate-400">Drop an .eml file to begin investigation</p>
                 </div>
               </div>
 
@@ -702,8 +711,8 @@ export default function App() {
                     <FileText className="h-8 w-8 text-[#203963]" />
                   )}
                 </div>
-                <p className="m-0 text-[1.45rem] font-extrabold text-[#12274a]">Drop your .eml file here</p>
-                <p className="mt-2 text-[1rem] text-slate-500">or browse from your computer to launch analysis</p>
+                <p className="m-0 text-[1.25rem] font-extrabold text-[#12274a]">Drop your .eml file here</p>
+                <p className="mt-2 text-[0.92rem] text-slate-500">or browse from your computer to launch analysis</p>
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
@@ -793,8 +802,8 @@ export default function App() {
                 <div className="grid items-center gap-6 lg:grid-cols-[170px_minmax(0,1fr)]">
                   <RiskRing riskScore={riskScore} classification={classification} />
                   <div>
-                    <h2 className="m-0 text-[2.5rem] font-extrabold tracking-tight text-[#0f2142]">{subject}</h2>
-                    <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-2 text-[0.98rem] font-semibold text-slate-400">
+                    <h2 className="m-0 text-[2.1rem] font-extrabold tracking-tight text-[#0f2142]">{subject}</h2>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-2 text-[0.9rem] font-semibold text-slate-400">
                       <span className="inline-flex items-center gap-2">
                         <Mail className="h-4 w-4" />
                         <span className="max-w-[620px] truncate" title={senderAddress}>
@@ -810,8 +819,17 @@ export default function App() {
                         Confidence: {confidence}
                       </span>
                     </div>
-                    <p className="mt-2 text-sm font-semibold text-slate-400">Sender domain: {senderDomain || '-'}</p>
-                    <p className={`mb-0 mt-1 text-[2.1rem] font-extrabold leading-tight ${classificationToneClass(classification)}`}>
+                    <p className="mt-2 text-[0.9rem] font-semibold text-slate-400">Sender domain: {senderDomain || '-'}</p>
+                    {threatTags.length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {threatTags.slice(0, 4).map((tag) => (
+                          <span key={tag.id || tag.label} className={threatTagBadgeClass(tag.severity)}>
+                            {tag.label || tag.id}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    <p className={`mb-0 mt-2 text-[1.8rem] font-extrabold leading-tight ${classificationToneClass(classification)}`}>
                       {report.result_heading || classificationHeadline(classification)}
                     </p>
                   </div>
@@ -821,15 +839,15 @@ export default function App() {
               <section className="panel-card p-5">
                 <div className="mb-3 flex items-center gap-2 text-[#1d3152]">
                   <Brain className="h-5 w-5 text-slate-400" />
-                  <h3 className="m-0 text-[1.5rem] font-extrabold">AI Analysis Summary</h3>
+                  <h3 className="m-0 text-[1.3rem] font-extrabold">AI Analysis Summary</h3>
                 </div>
 
-                <p className="mb-0 text-[1rem] leading-8 text-slate-600">{report.analyst_summary || 'No summary available.'}</p>
+                <p className="mb-0 text-[0.95rem] leading-7 text-slate-600">{report.analyst_summary || 'No summary available.'}</p>
 
                 <h4 className="mb-2 mt-6 text-[0.92rem] font-extrabold uppercase tracking-[0.11em] text-slate-400">Key Findings</h4>
                 <div className="grid gap-2">
                   {keyPoints.map((point, idx) => (
-                    <div key={`${idx}_${point}`} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-[1.02rem] text-slate-600">
+                    <div key={`${idx}_${point}`} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-[0.95rem] text-slate-600">
                       <span className="mr-3 inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-200 text-xs font-extrabold text-slate-500">
                         {idx + 1}
                       </span>
@@ -843,7 +861,7 @@ export default function App() {
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2 text-[#1d3152]">
                     <Mail className="h-5 w-5 text-slate-400" />
-                    <h3 className="m-0 text-[1.5rem] font-extrabold">Subject &amp; Body Analysis</h3>
+                    <h3 className="m-0 text-[1.3rem] font-extrabold">Subject &amp; Body Analysis</h3>
                   </div>
                   {(analysisDetails.length > 0 || analysisSnippets.length > 0) && classification !== 'non_malicious' ? (
                     <button
@@ -860,12 +878,12 @@ export default function App() {
 
                 <div className={`rounded-xl border p-3 ${analysisCardLevel(report.subject_level)}`}>
                   <h4 className="mb-1 text-[0.85rem] font-extrabold uppercase tracking-[0.09em] text-slate-600">Subject Assessment</h4>
-                  <p className="m-0 text-[1.02rem] text-slate-600">{report.subject_analysis || 'No subject assessment available.'}</p>
+                  <p className="m-0 text-[0.95rem] text-slate-600">{report.subject_analysis || 'No subject assessment available.'}</p>
                 </div>
 
                 <div className={`mt-3 rounded-xl border p-3 ${analysisCardLevel(report.body_level)}`}>
                   <h4 className="mb-1 text-[0.85rem] font-extrabold uppercase tracking-[0.09em] text-slate-600">Body Assessment</h4>
-                  <p className="m-0 text-[1.02rem] text-slate-600">{report.body_analysis || 'No body assessment available.'}</p>
+                  <p className="m-0 text-[0.95rem] text-slate-600">{report.body_analysis || 'No body assessment available.'}</p>
                 </div>
 
                 {classification !== 'non_malicious' ? (
@@ -887,7 +905,7 @@ export default function App() {
               </section>
 
               <section>
-                <h3 className="mb-1 pl-1 text-[1.5rem] font-extrabold text-[#1d3152]">Indicators of Compromise</h3>
+                <h3 className="mb-1 pl-1 text-[1.35rem] font-extrabold text-[#1d3152]">Indicators of Compromise</h3>
                 <div className="grid gap-3 md:grid-cols-2">
                   {indicatorPanels.map((panel) => {
                     const count = Array.isArray(panel?.items) ? panel.items.length : 0
@@ -899,7 +917,7 @@ export default function App() {
                         onClick={() => {
                           if (!disabled) setIndicatorPanel(panel)
                         }}
-                        className={`h-[208px] rounded-2xl border p-4 text-left transition ${panelLevelStyle(panel.level)} ${
+                        className={`h-[192px] rounded-2xl border p-4 text-left transition ${panelLevelStyle(panel.level)} ${
                           disabled ? 'cursor-default opacity-85' : 'hover:-translate-y-[1px] hover:shadow-soft'
                         }`}
                       >
@@ -909,12 +927,12 @@ export default function App() {
                               {panelIcon(panel.id)}
                             </span>
                             <div className="min-w-0 flex-1">
-                              <h4 className="m-0 text-[1.2rem] font-extrabold text-[#1f3356]">{panel.title || panel.label}</h4>
-                              <p className="mt-1 line-clamp-3 text-[0.98rem] leading-7 text-slate-500">{panel.summary || panel.empty_note}</p>
+                              <h4 className="m-0 text-[1.08rem] font-extrabold text-[#1f3356]">{panel.title || panel.label}</h4>
+                              <p className="mt-1 line-clamp-3 text-[0.9rem] leading-6 text-slate-500">{panel.summary || panel.empty_note}</p>
                             </div>
                             {!disabled ? <ChevronDown className="h-5 w-5 text-slate-400" /> : null}
                           </div>
-                          <p className="mt-auto text-base font-bold text-slate-400">
+                          <p className="mt-auto text-[0.95rem] font-bold text-slate-400">
                             {panel.label || 'Entries'} · {count} item{count === 1 ? '' : 's'}
                           </p>
                         </div>
@@ -926,7 +944,7 @@ export default function App() {
 
               {evidenceHighlights.length > 0 ? (
                 <section className="panel-card p-5">
-                  <h3 className="m-0 text-[1.45rem] font-extrabold text-[#1d3152]">Evidence Drivers</h3>
+                  <h3 className="m-0 text-[1.25rem] font-extrabold text-[#1d3152]">Evidence Drivers</h3>
                   <div className="mt-3 grid gap-2">
                     {evidenceHighlights.map((highlight, idx) => (
                       <div key={highlight.id || idx} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -944,7 +962,7 @@ export default function App() {
               ) : null}
 
               <section className="panel-card p-5">
-                <h3 className="m-0 text-[1.45rem] font-extrabold text-[#1d3152]">Analyst Decision</h3>
+                <h3 className="m-0 text-[1.25rem] font-extrabold text-[#1d3152]">Analyst Decision</h3>
                 <p className="mt-1 text-[0.95rem] text-slate-400">Review the AI analysis and make your determination</p>
 
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -968,7 +986,7 @@ export default function App() {
                         key={option.id}
                         type="button"
                         onClick={() => setDecisionDraft(option.id)}
-                        className={`inline-flex items-center gap-2 rounded-2xl border px-5 py-2.5 text-[1rem] font-bold transition ${tone}`}
+                        className={`inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-[0.92rem] font-bold transition ${tone}`}
                       >
                         <Icon className="h-5 w-5" />
                         {option.label}
@@ -981,14 +999,14 @@ export default function App() {
                   value={noteDraft}
                   onChange={(evt) => setNoteDraft(evt.target.value)}
                   placeholder="Add analyst notes (optional)..."
-                  className="mt-4 min-h-[120px] w-full rounded-2xl border border-slate-200 bg-white p-4 text-lg text-slate-600 outline-none ring-sky-200 focus:ring"
+                  className="mt-4 min-h-[120px] w-full rounded-2xl border border-slate-200 bg-white p-4 text-base text-slate-600 outline-none ring-sky-200 focus:ring"
                 />
 
                 <button
                   type="button"
                   onClick={() => saveAnalystDecision().catch(() => {})}
                   disabled={savingDecision}
-                  className="mt-4 w-full rounded-2xl bg-[#08183d] px-4 py-3 text-[1.9rem] font-bold text-white transition hover:bg-[#0a1f4b] disabled:cursor-not-allowed disabled:opacity-70"
+                  className="mt-4 w-full rounded-2xl bg-[#08183d] px-4 py-3 text-[1.05rem] font-bold text-white transition hover:bg-[#0a1f4b] disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   {savingDecision ? 'Saving...' : 'Save Decision'}
                 </button>
@@ -1003,8 +1021,8 @@ export default function App() {
         <aside className="panel-card case-scroll h-fit max-h-[calc(100vh-16px)] overflow-y-auto p-4 xl:sticky xl:top-2">
           <div className="mb-2 flex items-start justify-between gap-2">
             <div>
-              <h2 className="m-0 text-[1.65rem] font-extrabold text-[#162b4c]">Case Queue</h2>
-              <p className="m-0 text-[0.98rem] text-slate-400">{caseQueueTitle}</p>
+              <h2 className="m-0 text-[1.45rem] font-extrabold text-[#162b4c]">Case Queue</h2>
+              <p className="m-0 text-[0.9rem] text-slate-400">{caseQueueTitle}</p>
             </div>
             <button
               type="button"
@@ -1037,7 +1055,7 @@ export default function App() {
                   >
                     <div className="flex items-start justify-between gap-2">
                       <p
-                        className={`m-0 line-clamp-2 text-[1.05rem] font-extrabold leading-6 ${
+                        className={`m-0 line-clamp-2 text-[0.98rem] font-extrabold leading-6 ${
                           isActive ? 'text-slate-100' : 'text-[#162b4c]'
                         }`}
                         title={row.subject_line || row.filename || row.case_id}
@@ -1060,10 +1078,10 @@ export default function App() {
                           <span className="badge badge-neutral">Analyst: {String(row.analyst_decision || '').toLowerCase()}</span>
                         ) : null}
                       </div>
-                      <span className={`text-[2rem] font-extrabold ${riskTone}`}>{formatRisk(row.risk_score)}</span>
+                      <span className={`text-[1.75rem] font-extrabold ${riskTone}`}>{formatRisk(row.risk_score)}</span>
                     </div>
 
-                    <p className={`mt-auto text-[0.98rem] ${isActive ? 'text-slate-300' : 'text-slate-400'}`}>
+                    <p className={`mt-auto text-[0.9rem] ${isActive ? 'text-slate-300' : 'text-slate-400'}`}>
                       {formatDisplayTime(row.updated_at || row.created_at)}
                     </p>
                   </button>
@@ -1088,7 +1106,7 @@ export default function App() {
 
               return (
                 <section key={`${group.id || group.title || 'group'}_${groupIdx}`} className="rounded-xl border border-slate-200 bg-white p-3">
-                  <h4 className="m-0 text-xl font-extrabold text-slate-700">{group.title || 'Group'}</h4>
+                  <h4 className="m-0 text-[1.1rem] font-extrabold text-slate-700">{group.title || 'Group'}</h4>
                   {group.summary ? <p className="mt-1 text-sm text-slate-500">{group.summary}</p> : null}
                   {summaryLine ? <p className="mt-1 text-sm text-slate-500">{summaryLine}</p> : null}
                   <div className="mt-2 grid gap-2">

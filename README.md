@@ -5,30 +5,33 @@ Evidence-first phishing triage from a single `.eml` file with deterministic scor
 ## Current Direction
 - Web UI is the primary runtime (`docker compose up --build`).
 - Playbook orchestration is deprecated.
-- Investigation now uses deterministic enrichment-tool routing from unresolved non-deterministic signals.
+- Investigation now uses adaptive deterministic enrichment-tool routing from unresolved non-deterministic signals.
 - LLM is constrained to semantic analysis + concise analyst copy, not tool execution or direct verdict control.
 
 ## Architecture Summary
 Pipeline stages:
 1. Parse + normalize `.eml` into envelope JSON.
 2. Generate deterministic signals.
-3. Run semantic LLM assessment on controlled evidence envelope.
-4. Score risk/confidence deterministically.
-5. Build deterministic enrichment tool plan from unknown non-deterministic signals.
-6. Execute bounded enrichment loop and rescore after each iteration.
-7. Emit final verdict, report, and audit artifacts.
+3. Score baseline risk/confidence deterministically.
+4. Execute baseline TI enrichment on highest-value unresolved signals.
+5. Run semantic LLM assessment on TI-grounded controlled evidence.
+6. Continue adaptive bounded enrichment and rescore each iteration.
+7. Derive deterministic threat tags from final signals/score.
+8. Emit final verdict, report, and audit artifacts.
 
 ```mermaid
 flowchart LR
     A["EML Upload"] --> B["Normalization Envelope"]
-    B --> C["Signal Engine<br/>(Deterministic + Semantic)"]
-    C --> D["Scoring Engine<br/>(Risk + Confidence + Gate)"]
+    B --> C["Signal Engine<br/>(Deterministic Baseline)"]
+    C --> D["Scoring Engine<br/>(Baseline Risk + Confidence + Gate)"]
     D --> E{"Need Enrichment?"}
-    E -- "No" --> H["Final Report + Verdict"]
-    E -- "Yes" --> F["Deterministic Enrichment Plan"]
-    F --> G["Bounded Enrichment Loop<br/>(MCP tools + evidence mapping)"]
-    G --> D
-    H --> I["Artifacts + Audit Chain"]
+    E -- "No" --> H["Threat Tags + Final Report"]
+    E -- "Yes" --> F["Adaptive TI Enrichment<br/>(Tool routing + fallback providers)"]
+    F --> G["Semantic Assessment<br/>(TI-grounded controlled evidence)"]
+    G --> I["Adaptive Enrichment Loop<br/>(bounded steps + early stop)"]
+    I --> J["Final Deterministic Score"]
+    J --> H
+    H --> K["Artifacts + Audit Chain"]
 ```
 
 ## Key Components
@@ -46,6 +49,7 @@ flowchart LR
 - Semantic assessor: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/signals/semantic_signal_assessor.md`
 - Scoring: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/scoring/scoring_engine_pipeline.md`
 - Investigation pipeline: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/investigation/investigation_agent_pipeline.md`
+- Threat tagging: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/investigation/threat_tagging_pipeline.md`
 - Web UI: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/webui/local_webui_pipeline.md`
 - Audit chain: `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/investigation/audit_chain.md`
 - Prompt contracts (active): `/Users/gabe/Documents/Phishing_Triage_Agent_Mailbbox_Plug- in/Docs/prompts/prompt_contracts.md`
@@ -66,7 +70,7 @@ UI highlights:
 - JSX React frontend (Vite + Tailwind) served by FastAPI from `webui/frontend/dist`,
 - production-style split view (report workspace + sticky case queue),
 - persistent `New Analysis` and `Back to Upload` actions for repeat investigations,
-- report hero with animated risk ring, sender/date/confidence metadata row, and verdict badge,
+- report hero with animated risk ring, sender/date/confidence metadata row, verdict badge, and deterministic threat-tag chips,
 - fixed-height queue cards with line-clamped subjects and risk-color alignment to verdict,
 - `Indicators of Compromise` cards with grouped modal drill-down + full IOC copy,
 - targeted semantic IOC overrides (no blanket “all suspicious” promotion),

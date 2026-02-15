@@ -49,10 +49,10 @@ Runtime/UI:
   - investigation mode selector (`mock` / `live`),
   - animated progress card with stage rows + runtime log stream,
 - report sections:
-  - report hero with animated risk ring, sender/date/confidence metadata row, timestamp, verdict badge,
+  - report hero with animated risk ring, sender/date/confidence metadata row, timestamp, verdict badge, and threat-tag chips,
   - 2-sentence AI summary and 3 key findings,
   - subject and body assessment cards with green/yellow/red overlays,
-  - suspicious snippet preview block (shown for non-benign classifications),
+  - suspicious snippet preview block (shown only when suspicious/malicious text excerpts are actually detected),
   - optional `View Detailed Review` popup with semantic findings + snippet evidence sandbox blocks,
   - `Indicators of Compromise` card grid,
   - grouped IOC modal drill-down (sender/legitimate/suspicious domain groupings when available),
@@ -91,6 +91,7 @@ Per-tool enrichment runtime messages are emitted from:
 ## Report Data Contract (UI)
 `web_report` includes:
 - `classification`, `result_heading`, `analyst_summary`, `key_points`
+- `primary_threat_tag`, `threat_tags[]`
 - `ioc_items`, `urls_clean_note`
 - `subject_line`, `sender_address`, `sender_domain`
 - `subject_level`, `subject_analysis`
@@ -109,10 +110,19 @@ Indicator panel levels:
 - `yellow` = suspicious/review evidence,
 - `green` = appears benign,
 - `neutral` = empty attachment state (`No attachments found`).
+- Domain panel level is derived from rendered domain item outcomes (to prevent parent-card severity from contradicting child IOC outcomes).
 
 Semantic override rule in Web UI report generation:
 - Semantic overrides are targeted (for example sender-domain deception and URL-intent mismatch) instead of blanket elevation across all IOCs.
 - Clean IOCs remain clean unless a specific semantic/context signal applies to that IOC.
+
+Subject/body rendering guardrails:
+- `subject_analysis` is constrained to subject-line wording only (no IOC/domain/header spillover).
+- `body_analysis` is constrained to body-language assessment only (no IOC/domain/header spillover).
+- For authenticated marketing patterns (auth pass + mailing-list/ESP context), report copy prefers benign-language defaults unless stronger phishing evidence exists.
+- In authenticated marketing contexts, key-point generation suppresses obfuscated tracking-link phrasing and de-duplicates overlapping findings (for example, urgency wording repeated between key findings and semantic highlights).
+- LLM summary/key-point lines that conflict with deterministic evidence (for example unwarranted lookalike/hidden-CSS claims, or “no sending IP” when IPs were extracted) are replaced by deterministic fallback copy.
+- IP panel summary is deterministic and tied to extracted sender-IP evidence to prevent contradictory messaging.
 
 Case records also include:
 - `analyst_decision` (`undecided|benign|suspicious|escalate`)

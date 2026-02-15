@@ -51,6 +51,7 @@ RECEIVED_BY_RE = re.compile(r"\bby\s+([^\s\(\);]+)", re.IGNORECASE)
 RECEIVED_WITH_RE = re.compile(r"\bwith\s+([^\s\(\);]+)", re.IGNORECASE)
 RECEIVED_ID_RE = re.compile(r"\bid\s+([^\s;]+)", re.IGNORECASE)
 RECEIVED_FOR_RE = re.compile(r"\bfor\s+<?([^>;]+)>?", re.IGNORECASE)
+RECEIVED_IP_BRACKET_RE = re.compile(r"\[([0-9A-Fa-f:.]+)\]")
 
 
 @dataclass
@@ -217,7 +218,69 @@ def _parse_received_header(raw_value: str) -> dict[str, Any]:
         record["for"] = m_for.group(1).strip()
     if date_part:
         record["date"] = date_part
+    ip_candidates = RECEIVED_IP_BRACKET_RE.findall(raw_value)
+    for candidate in ip_candidates:
+        try:
+            ipaddress.ip_address(candidate)
+            record["from_ip"] = candidate
+            break
+        except ValueError:
+            continue
     return record
+
+
+def _extract_ips_from_text(value: str) -> list[str]:
+    out: list[str] = []
+    for candidate in IP_RE.findall(str(value or "")):
+        item = candidate.strip("[]()<>;, ")
+        try:
+            ipaddress.ip_address(item)
+            out.append(item)
+        except ValueError:
+            continue
+    return out
+
+
+def _extract_explicit_sender_ips(headers_map: dict[str, list[str]], received_chain: list[dict[str, Any]]) -> set[str]:
+    ips: set[str] = set()
+
+    for hop in received_chain:
+        hop_ip = str(hop.get("from_ip") or "").strip()
+        if hop_ip:
+            try:
+                ipaddress.ip_address(hop_ip)
+                ips.add(hop_ip)
+            except ValueError:
+                pass
+        for token in _extract_ips_from_text(str(hop.get("raw") or "")):
+            ips.add(token)
+
+    for header_name in ("x-mailgun-sending-ip", "x-sending-ip", "x-originating-ip", "x-sender-ip"):
+        for raw in headers_map.get(header_name, []) or []:
+            for token in _extract_ips_from_text(raw):
+                ips.add(token)
+
+    for raw in headers_map.get("received-spf", []) or []:
+        m = CLIENT_IP_RE.search(raw)
+        if m:
+            token = str(m.group(1) or "").strip()
+            try:
+                ipaddress.ip_address(token)
+                ips.add(token)
+            except ValueError:
+                pass
+
+    for raw in headers_map.get("authentication-results", []) or []:
+        m = CLIENT_IP_RE.search(raw)
+        if m:
+            token = str(m.group(1) or "").strip()
+            try:
+                ipaddress.ip_address(token)
+                ips.add(token)
+            except ValueError:
+                pass
+
+    return ips
 
 
 def _extract_auth_summary(auth_headers: list[str]) -> dict[str, Any]:
@@ -529,6 +592,20 @@ def build_envelope(eml_path: str, case_id: str | None = None, source: str = "loc
         },
     }
 
+    received_chain = [_parse_received_header(v) for v in received_headers]
+    explicit_sender_ips = _extract_explicit_sender_ips(headers_map, received_chain)
+    known_entity_ips = {str(item.get("ip") or "").strip() for item in entities.get("ips", [])}
+    for ip_text in sorted(explicit_sender_ips):
+        if ip_text in known_entity_ips:
+            continue
+        try:
+            version = ipaddress.ip_address(ip_text).version
+        except ValueError:
+            continue
+        entities["ips"].append({"ip": ip_text, "version": version})
+        known_entity_ips.add(ip_text)
+    entities["ips"] = sorted(entities.get("ips", []), key=lambda x: str(x.get("ip") or ""))
+
     envelope = {
         "schema_version": "1.0",
         "case_id": case_id,
@@ -546,7 +623,7 @@ def build_envelope(eml_path: str, case_id: str | None = None, source: str = "loc
             "subject": subject,
             "date": date_header,
             "message_id": message_id,
-            "received_chain": [_parse_received_header(v) for v in received_headers],
+            "received_chain": received_chain,
             "headers": headers_map,
         },
         "auth_summary": _extract_auth_summary(auth_headers),

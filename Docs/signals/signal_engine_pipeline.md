@@ -21,9 +21,11 @@ Convert normalized envelope data into bounded triage signals (`true|false|unknow
 2. Evaluate deterministic signals using envelope-only logic.
 3. Evaluate non-deterministic signals from tool results when available.
 4. Default unresolved non-deterministic signals to `unknown`.
-5. Run semantic assessor on controlled evidence envelope.
-6. Merge semantic outputs into non-deterministic `semantic.*` signals.
+5. Run semantic assessor on controlled evidence envelope (when `enable_semantic=true`).
+6. Merge semantic outputs into non-deterministic `semantic.*` signals (when semantic stage is enabled).
 7. Emit strict signal map for scoring and enrichment planning.
+
+Deterministic and semantic stages now include authenticated-marketing guardrails to reduce false positives from normal ESP infrastructure.
 
 ## Semantic Signal Coverage
 Current semantic signals:
@@ -44,12 +46,24 @@ These signals emphasize:
 - phishing pressure language and social engineering cues,
 - prompt-injection attempts embedded in email text.
 
+Guardrail behavior:
+- If SPF/DKIM/DMARC+alignment pass and mailing-list/ESP tracking context is present, semantic sender/URL mismatch signals are not allowed to turn `true` based on tracking wrappers alone.
+- In the same authenticated marketing context, isolated urgency language (`semantic.coercive_language`) is treated as non-phishing unless stronger credential/payment/deception cues are present.
+- Guardrails do not suppress true high-risk body language (credential theft, account takeover, payment diversion cues).
+
 ## Deterministic Evaluation Areas
 - `message_metadata` for identity/header checks
 - `auth_summary` for SPF/DKIM/DMARC/alignment
 - `entities.urls/domains/emails/ips` for URL and infrastructure signals
 - `mime_parts.body_extraction` for wording/evasion checks
 - `attachments` for file-type and static indicators
+
+URL/header guardrail details:
+- Header-domain mismatch now ignores non-FQDN `Message-ID` host fragments (for example internal relay hostnames).
+- URL mismatch/redirect/obfuscation checks suppress known ESP tracking wrappers (for example `*.ct.sendgrid.net`) unless stronger mismatch evidence is present.
+- Long encoded URL-path checks also suppress authenticated sender-related marketing tracking hosts (for example organizational click-wrapper subdomains).
+- Hidden CSS/preheader markers (`display:none`, `opacity:0`, etc.) are treated as benign template behavior in authenticated marketing context unless paired with stronger suspicious overlays/forms/scripts.
+- Base64-in-HTML evasion detection is stricter and can return `unknown` (instead of `true`) for authenticated mailing-template context.
 
 ## Non-Deterministic Evaluation
 Non-deterministic signals are resolved by enrichment tools (when available), including:

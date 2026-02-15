@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""End-to-end phishing investigation pipeline with deterministic enrichment orchestration.
+"""End-to-end phishing investigation pipeline with adaptive deterministic enrichment.
 
 Pipeline:
 1) Ingest and normalize envelope
-2) Baseline deterministic + semantic signals and score
-3) Deterministic enrichment tool plan from unknown non-deterministic signals
-4) Bounded enrichment loop (no playbooks)
-5) Final deterministic score + analyst report
+2) Baseline deterministic signals and score
+3) Baseline TI enrichment (bounded)
+4) Semantic assessment with TI-grounded controlled evidence
+5) Adaptive deterministic enrichment loop (no playbooks)
+6) Final deterministic score + analyst report
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import argparse
 import copy
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -47,6 +49,7 @@ from Investigation_Agent.prompt_templates import (
     REPORT_SYSTEM_PROMPT,
     report_user_prompt,
 )
+from Investigation_Agent.threat_tags import derive_threat_tags
 
 
 TOOL_ALIAS_TO_MCP: dict[str, list[str]] = {
@@ -70,6 +73,33 @@ INTERNAL_TRUSTED_DOMAINS = {
     "office.com",
     "valero.com",
 }
+
+MOCK_LOOKALIKE_BRANDS = {
+    "microsoft",
+    "google",
+    "paypal",
+    "amazon",
+    "apple",
+    "docusign",
+    "toyota",
+    "chase",
+    "wellsfargo",
+}
+
+MOCK_CONFUSABLE_TRANSLATION = str.maketrans(
+    {
+        "0": "o",
+        "1": "l",
+        "3": "e",
+        "4": "a",
+        "5": "s",
+        "7": "t",
+        "8": "b",
+        "9": "g",
+        "@": "a",
+        "$": "s",
+    }
+)
 
 TOOL_ALIAS_TO_SIGNAL_IDS: dict[str, list[str]] = {
     "org_domain_inventory": ["identity.domain_not_owned_by_org"],
@@ -113,6 +143,14 @@ ENRICHMENT_ALIAS_PRIORITY = [
     "dns_history",
     "cdn_fronting_detector",
     "org_domain_inventory",
+]
+
+BASELINE_TI_PRIORITY = [
+    "url_reputation",
+    "ip_reputation",
+    "hash_intel_lookup",
+    "whois_domain_age",
+    "brand_lookalike_detector",
 ]
 
 
@@ -168,6 +206,25 @@ def _org_domain(domain: str | None) -> str | None:
     return ".".join(parts[-2:])
 
 
+def _mock_is_brand_lookalike(domain_value: str) -> bool:
+    domain = str(domain_value or "").strip().lower().strip(".")
+    if not domain:
+        return False
+    if domain.startswith("xn--") or any(ord(ch) > 127 for ch in domain):
+        return True
+
+    labels = [lbl for lbl in re.split(r"[.-]", domain) if lbl]
+    for label in labels:
+        if len(label) < 4:
+            continue
+        mapped = label.translate(MOCK_CONFUSABLE_TRANSLATION)
+        for brand in MOCK_LOOKALIKE_BRANDS:
+            # Require a confusable transformation signal (not plain substring presence).
+            if mapped == brand and label != brand:
+                return True
+    return False
+
+
 def _configured_org_domains() -> set[str]:
     raw = os.getenv("ORG_TRUSTED_DOMAINS", "")
     values = {v.strip().lower() for v in raw.split(",") if v.strip()}
@@ -175,27 +232,53 @@ def _configured_org_domains() -> set[str]:
 
 
 def _extract_urls(envelope: dict[str, Any]) -> list[str]:
-    return [u.get("normalized") for u in envelope.get("entities", {}).get("urls", []) if u.get("normalized")]
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in envelope.get("entities", {}).get("urls", []) or []:
+        value = str(row.get("normalized") or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
 
 
 def _extract_domains(envelope: dict[str, Any]) -> list[str]:
-    out = [d.get("domain") for d in envelope.get("entities", {}).get("domains", []) if d.get("domain")]
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in envelope.get("entities", {}).get("domains", []) or []:
+        value = str(row.get("domain") or "").strip().lower()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
     primary = _extract_primary_domain(envelope)
-    if primary and primary not in out:
+    if primary and primary not in seen:
         out.append(primary)
     return out
 
 
 def _extract_ips(envelope: dict[str, Any]) -> list[str]:
-    return [i.get("ip") for i in envelope.get("entities", {}).get("ips", []) if i.get("ip")]
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in envelope.get("entities", {}).get("ips", []) or []:
+        value = str(row.get("ip") or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
 
 
 def _extract_hashes(envelope: dict[str, Any]) -> list[str]:
-    hashes = []
+    hashes: list[str] = []
+    seen: set[str] = set()
     for att in envelope.get("attachments", []) or []:
-        sha = (att.get("hashes") or {}).get("sha256")
-        if sha:
-            hashes.append(sha)
+        sha = str((att.get("hashes") or {}).get("sha256") or "").strip().lower()
+        if not sha or sha in seen:
+            continue
+        seen.add(sha)
+        hashes.append(sha)
     return hashes
 
 
@@ -247,8 +330,8 @@ def _execute_internal_tool(tool_alias: str, payload: dict[str, Any], envelope: d
         return {"status": "ok", "owned": owned, "confidence": 0.8 if owned else 0.7}
 
     if tool_alias == "brand_lookalike_detector":
-        lookalike = "-" in value and not value.endswith(".edu")
-        return {"status": "ok", "is_lookalike": lookalike, "confidence": 0.8 if lookalike else 0.3}
+        lookalike = _mock_is_brand_lookalike(value)
+        return {"status": "ok", "is_lookalike": lookalike, "confidence": 0.8 if lookalike else 0.35}
 
     if tool_alias == "dns_txt_lookup":
         suspicious = "secure" in value or "verify" in value
@@ -557,8 +640,16 @@ def _execute_enrichment_tool(
                     "result": routed,
                 }
                 evidence.append(ev)
-                updates.extend(_map_tool_result_to_signal_updates(tool_alias, payload, routed, evidence_id))
+                mapped_updates = _map_tool_result_to_signal_updates(tool_alias, payload, routed, evidence_id)
+                updates.extend(mapped_updates)
                 tool_calls_used += 1
+                output = routed.get("output", {}) if isinstance(routed, dict) else {}
+                status = str((output or {}).get("status") or "").lower()
+                confidence = float((output or {}).get("confidence") or 0.0)
+                # Fallback chain behavior:
+                # stop on first provider that produced concrete updates or sufficiently confident "ok" output.
+                if status == "ok" and (mapped_updates or confidence >= 0.35):
+                    break
         else:
             internal = _execute_internal_tool(tool_alias, payload, envelope)
             ev_idx += 1
@@ -620,6 +711,156 @@ def _build_enrichment_plan(
     }
 
 
+def _unknown_nondeterministic_signals(signals_doc: dict[str, Any]) -> list[str]:
+    return [
+        sid
+        for sid, payload in signals_doc.get("signals", {}).items()
+        if payload.get("kind") == "non_deterministic"
+        and payload.get("value") == "unknown"
+        and not sid.startswith("semantic.")
+    ]
+
+
+def _required_tools_for_unknown_signals(
+    unknown_signals: list[str],
+    nondet_rules: dict[str, Any],
+) -> set[str]:
+    rule_map: dict[str, list[str]] = {}
+    for row in nondet_rules.get("non_deterministic_rules", []) or []:
+        sid = str(row.get("id") or "")
+        req = [str(x) for x in (row.get("required_tools") or []) if str(x)]
+        if sid:
+            rule_map[sid] = req
+    tool_set: set[str] = set()
+    for sid in unknown_signals:
+        for alias in rule_map.get(sid, []):
+            if alias != "llm_semantic_assessor":
+                tool_set.add(alias)
+    return tool_set
+
+
+def _tool_priority_index(tool_alias: str) -> int:
+    try:
+        return ENRICHMENT_ALIAS_PRIORITY.index(tool_alias)
+    except ValueError:
+        return 10_000
+
+
+def _signal_weight_lookup(scoring_cfg: dict[str, Any], signal_id: str) -> float:
+    overrides = ((scoring_cfg.get("risk") or {}).get("signal_overrides") or {})
+    if signal_id in overrides and "true_weight" in (overrides.get(signal_id) or {}):
+        return float((overrides.get(signal_id) or {}).get("true_weight") or 0.0)
+    category = signal_id.split(".", 1)[0]
+    cat_defaults = ((scoring_cfg.get("risk") or {}).get("category_defaults") or {}).get(category) or {}
+    return float(cat_defaults.get("non_deterministic") or cat_defaults.get("deterministic") or 0.0)
+
+
+def _tool_expected_gain(
+    tool_alias: str,
+    signals_doc: dict[str, Any],
+    scoring_cfg: dict[str, Any],
+) -> float:
+    score = 0.0
+    for signal_id in TOOL_ALIAS_TO_SIGNAL_IDS.get(tool_alias, []):
+        payload = (signals_doc.get("signals", {}) or {}).get(signal_id, {})
+        if payload.get("value") != "unknown":
+            continue
+        weight = _signal_weight_lookup(scoring_cfg, signal_id)
+        score += max(1.0, weight)
+    return score
+
+
+def _select_next_tool_alias(
+    candidate_tools: set[str],
+    completed_tools: set[str],
+    envelope: dict[str, Any],
+    signals_doc: dict[str, Any],
+    scoring_cfg: dict[str, Any],
+    presemantic_phase: bool = False,
+) -> str | None:
+    ranked: list[tuple[float, str]] = []
+    for alias in candidate_tools:
+        if alias in completed_tools:
+            continue
+        payload_count = len(_build_tool_payloads(alias, envelope))
+        if payload_count <= 0:
+            continue
+        expected_gain = _tool_expected_gain(alias, signals_doc, scoring_cfg)
+        priority_bonus = max(0, 20 - _tool_priority_index(alias))
+        presemantic_bonus = 10.0 if presemantic_phase and alias in BASELINE_TI_PRIORITY else 0.0
+        score = (expected_gain * 1.7) + (payload_count * 0.9) + priority_bonus + presemantic_bonus
+        ranked.append((score, alias))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda row: (-row[0], _tool_priority_index(row[1]), row[1]))
+    return ranked[0][1]
+
+
+def _build_semantic_ti_context(
+    envelope: dict[str, Any],
+    signals_doc: dict[str, Any],
+    scoring_cfg: dict[str, Any],
+) -> dict[str, Any]:
+    entities = envelope.get("entities", {}) or {}
+    urls = entities.get("urls", []) or []
+    domains = entities.get("domains", []) or []
+    ips = entities.get("ips", []) or []
+
+    true_signals = [
+        sid
+        for sid, payload in (signals_doc.get("signals") or {}).items()
+        if str(payload.get("value") or "").lower() == "true"
+    ]
+    high_impact = set(((scoring_cfg.get("risk") or {}).get("high_impact_signals") or []))
+    high_risk_true = [sid for sid in true_signals if sid in high_impact]
+
+    malicious_urls: list[str] = []
+    malicious_domains: list[str] = []
+    malicious_ips: list[str] = []
+
+    if str(((signals_doc.get("signals") or {}).get("url.reputation_malicious") or {}).get("value") or "").lower() == "true":
+        malicious_urls = [str(item.get("normalized") or item.get("url") or "") for item in urls[:20] if item]
+    if str(((signals_doc.get("signals") or {}).get("identity.lookalike_domain_confirmed") or {}).get("value") or "").lower() == "true":
+        malicious_domains = [str(item.get("domain") or "") for item in domains[:20] if item]
+    if str(((signals_doc.get("signals") or {}).get("infra.sending_ip_reputation_bad") or {}).get("value") or "").lower() == "true":
+        malicious_ips = [str(item.get("ip") or "") for item in ips[:20] if item]
+
+    return {
+        "malicious_urls": [u for u in malicious_urls if u],
+        "malicious_domains": [d for d in malicious_domains if d],
+        "malicious_ips": [ip for ip in malicious_ips if ip],
+        "high_risk_signals_true": high_risk_true[:30],
+        "notes": (
+            "Threat-intel context is derived from deterministic + tool-backed signals. "
+            "Use this context to reduce false positives on authenticated marketing traffic."
+        ),
+    }
+
+
+def _should_stop_early(
+    current_score: dict[str, Any],
+    score_history: list[dict[str, Any]],
+) -> tuple[bool, str | None]:
+    risk = float(current_score.get("risk_score") or 0.0)
+    conf = float(current_score.get("confidence_score") or 0.0)
+
+    if risk >= 85 and conf >= 0.85:
+        return True, "definitive_phish"
+    if risk <= 20 and conf >= 0.85:
+        return True, "definitive_benign"
+
+    if len(score_history) >= 4:
+        recent = score_history[-4:]
+        gains = []
+        for idx in range(1, len(recent)):
+            prev = float(recent[idx - 1].get("confidence_score") or 0.0)
+            curr = float(recent[idx].get("confidence_score") or 0.0)
+            gains.append(curr - prev)
+        if gains and all(gain < 0.02 for gain in gains):
+            return True, "confidence_plateau"
+    return False, None
+
+
 def run_pipeline(
     eml_path: str,
     out_dir: str,
@@ -674,7 +915,7 @@ def run_pipeline(
         },
     )
 
-    # 2) Baseline signals + scoring
+    # 2) Baseline deterministic signals + scoring (semantic deferred until TI context exists)
     _emit(event_hook, "stage_started", {"stage": "baseline_scoring"})
     signals_doc = run_signal_engine(
         envelope=envelope,
@@ -684,17 +925,21 @@ def run_pipeline(
         tool_results=None,
     )
 
-    controlled_evidence = build_controlled_evidence_envelope(envelope)
-    semantic_doc = assess_semantic_signals(controlled_evidence, llm=llm)
-    semantic_updates = semantic_assessments_to_updates(semantic_doc)
-    _apply_signal_updates(signals_doc, semantic_updates)
-
     baseline_signals = copy.deepcopy(signals_doc)
     score_doc = score_signals(signals_doc, scoring_cfg)
     baseline_score = copy.deepcopy(score_doc)
 
-    (out / "evidence.controlled.json").write_text(json.dumps(controlled_evidence, indent=2) + "\n", encoding="utf-8")
-    (out / "semantic_assessment.json").write_text(json.dumps(semantic_doc, indent=2) + "\n", encoding="utf-8")
+    semantic_doc: dict[str, Any] = {
+        "assessments": [],
+        "prompt_injection_detected": False,
+        "prompt_injection_indicators": [],
+        "notes": "Semantic stage deferred until baseline TI enrichment context is available.",
+    }
+    controlled_evidence: dict[str, Any] = {
+        "case_id": envelope.get("case_id"),
+        "security_note": "Semantic stage deferred until baseline TI enrichment context is available.",
+    }
+
     (out / "signals.baseline.json").write_text(json.dumps(signals_doc, indent=2) + "\n", encoding="utf-8")
     (out / "score.baseline.json").write_text(json.dumps(score_doc, indent=2) + "\n", encoding="utf-8")
     _emit(
@@ -713,108 +958,232 @@ def run_pipeline(
     current_score = copy.deepcopy(score_doc)
     iterations: list[dict[str, Any]] = []
     total_tool_calls = 0
+    score_history: list[dict[str, Any]] = [
+        {
+            "risk_score": current_score.get("risk_score"),
+            "confidence_score": current_score.get("confidence_score"),
+        }
+    ]
 
-    # 3) Deterministic enrichment tool planning and execution
+    # 3) Adaptive deterministic enrichment
     enrichment_plan = _build_enrichment_plan(current_signals, signal_nondet_rules)
     (out / "enrichment.plan.json").write_text(json.dumps(enrichment_plan, indent=2) + "\n", encoding="utf-8")
 
-    if not current_score.get("agent_gate", {}).get("invoke_agent", True):
-        stop_reason = "risk_gate_satisfied_after_baseline"
+    def _execute_enrichment_iteration(tool_alias: str, phase: str, evidence_counter: int) -> tuple[int, bool]:
+        nonlocal total_tool_calls, current_score
         _emit(
             event_hook,
-            "stage_completed",
+            "enrichment_started",
             {
-                "stage": "enrich_signals",
-                "stop_reason": stop_reason,
-                "used_enrichment_steps": 0,
-                "used_tool_calls": 0,
+                "tool_alias": tool_alias,
+                "index": len(iterations) + 1,
+                "remaining_tool_budget": budget.max_tool_calls - total_tool_calls,
+                "phase": phase,
             },
         )
+
+        evidence, deterministic_updates, calls_used = _execute_enrichment_tool(
+            tool_alias=tool_alias,
+            envelope=envelope,
+            registry=mcp_registry,
+            cache=cache,
+            mode=mode,
+            tool_call_budget_remaining=(budget.max_tool_calls - total_tool_calls),
+            evidence_counter_start=evidence_counter,
+        )
+        total_tool_calls += calls_used
+        updates = _dedupe_updates(deterministic_updates)
+        _apply_signal_updates(current_signals, updates)
+        current_score = score_signals(current_signals, scoring_cfg)
+        score_history.append(
+            {
+                "risk_score": current_score.get("risk_score"),
+                "confidence_score": current_score.get("confidence_score"),
+            }
+        )
+
+        iteration = {
+            "index": len(iterations) + 1,
+            "phase": phase,
+            "tool_alias": tool_alias,
+            "tool_calls_used": calls_used,
+            "evidence_count": len(evidence),
+            "evidence": evidence,
+            "signal_updates": updates,
+            "score_after": {
+                "risk_score": current_score.get("risk_score"),
+                "confidence_score": current_score.get("confidence_score"),
+                "verdict": current_score.get("verdict"),
+                "agent_gate": current_score.get("agent_gate"),
+            },
+        }
+        iterations.append(iteration)
+
+        _emit(
+            event_hook,
+            "enrichment_completed",
+            {
+                "tool_alias": tool_alias,
+                "tool_calls_used": calls_used,
+                "risk_score": current_score.get("risk_score"),
+                "confidence_score": current_score.get("confidence_score"),
+                "verdict": current_score.get("verdict"),
+                "phase": phase,
+            },
+        )
+        return len(evidence), bool(updates)
+
+    if not current_score.get("agent_gate", {}).get("invoke_agent", True):
+        stop_reason = "risk_gate_satisfied_after_baseline"
     else:
         _emit(event_hook, "stage_started", {"stage": "enrich_signals"})
         stop_reason = "enrichment_completed"
         evidence_counter = 0
+        completed_tools: set[str] = set()
+        initial_candidates = set(enrichment_plan.get("tool_order", []))
 
-        for tool_alias in enrichment_plan.get("tool_order", []):
+        # Phase A: baseline TI pre-enrichment before semantic assessment.
+        presemantic_rounds = min(3, budget.max_enrichment_steps)
+        for _ in range(presemantic_rounds):
             if len(iterations) >= budget.max_enrichment_steps:
                 stop_reason = "max_enrichment_steps_reached"
                 break
             if total_tool_calls >= budget.max_tool_calls:
                 stop_reason = "tool_call_budget_reached"
                 break
-
-            _emit(
-                event_hook,
-                "enrichment_started",
-                {
-                    "tool_alias": tool_alias,
-                    "index": len(iterations) + 1,
-                    "remaining_tool_budget": budget.max_tool_calls - total_tool_calls,
-                },
-            )
-
-            evidence, deterministic_updates, calls_used = _execute_enrichment_tool(
-                tool_alias=tool_alias,
+            next_tool = _select_next_tool_alias(
+                candidate_tools=initial_candidates,
+                completed_tools=completed_tools,
                 envelope=envelope,
-                registry=mcp_registry,
-                cache=cache,
-                mode=mode,
-                tool_call_budget_remaining=(budget.max_tool_calls - total_tool_calls),
-                evidence_counter_start=evidence_counter,
+                signals_doc=current_signals,
+                scoring_cfg=scoring_cfg,
+                presemantic_phase=True,
             )
-            total_tool_calls += calls_used
-            evidence_counter += len(evidence)
-
-            updates = _dedupe_updates(deterministic_updates)
-            _apply_signal_updates(current_signals, updates)
-            current_score = score_signals(current_signals, scoring_cfg)
-
-            iteration = {
-                "index": len(iterations) + 1,
-                "phase": "deterministic_enrichment",
-                "tool_alias": tool_alias,
-                "tool_calls_used": calls_used,
-                "evidence_count": len(evidence),
-                "evidence": evidence,
-                "signal_updates": updates,
-                "score_after": {
-                    "risk_score": current_score.get("risk_score"),
-                    "confidence_score": current_score.get("confidence_score"),
-                    "verdict": current_score.get("verdict"),
-                    "agent_gate": current_score.get("agent_gate"),
-                },
-            }
-            iterations.append(iteration)
-
-            _emit(
-                event_hook,
-                "enrichment_completed",
-                {
-                    "tool_alias": tool_alias,
-                    "tool_calls_used": calls_used,
-                    "risk_score": current_score.get("risk_score"),
-                    "confidence_score": current_score.get("confidence_score"),
-                    "verdict": current_score.get("verdict"),
-                },
+            if not next_tool:
+                break
+            evidence_count, _has_updates = _execute_enrichment_iteration(
+                tool_alias=next_tool,
+                phase="baseline_ti_enrichment",
+                evidence_counter=evidence_counter,
             )
+            evidence_counter += evidence_count
+            completed_tools.add(next_tool)
 
+            stop, stop_hint = _should_stop_early(current_score, score_history)
+            if stop:
+                stop_reason = str(stop_hint or "early_stop")
+                break
             if not current_score.get("agent_gate", {}).get("invoke_agent", True):
                 stop_reason = "confidence_gate_satisfied"
                 break
 
-        if not enrichment_plan.get("tool_order"):
-            stop_reason = "no_enrichment_candidates"
+        # Phase B: semantic assessment with TI context when still needed.
+        if (
+            stop_reason == "enrichment_completed"
+            and len(iterations) < budget.max_enrichment_steps
+            and current_score.get("agent_gate", {}).get("invoke_agent", True)
+        ):
+            ti_context = _build_semantic_ti_context(envelope, current_signals, scoring_cfg)
+            controlled_evidence = build_controlled_evidence_envelope(envelope, ti_context=ti_context)
+            semantic_doc = assess_semantic_signals(controlled_evidence, llm=llm)
+            semantic_updates = semantic_assessments_to_updates(semantic_doc)
+            _apply_signal_updates(current_signals, semantic_updates)
+            current_score = score_signals(current_signals, scoring_cfg)
+            score_history.append(
+                {
+                    "risk_score": current_score.get("risk_score"),
+                    "confidence_score": current_score.get("confidence_score"),
+                }
+            )
+            iterations.append(
+                {
+                    "index": len(iterations) + 1,
+                    "phase": "semantic_assessment",
+                    "tool_alias": "llm_semantic_assessor",
+                    "tool_calls_used": 0,
+                    "evidence_count": 0,
+                    "evidence": [],
+                    "signal_updates": semantic_updates,
+                    "score_after": {
+                        "risk_score": current_score.get("risk_score"),
+                        "confidence_score": current_score.get("confidence_score"),
+                        "verdict": current_score.get("verdict"),
+                        "agent_gate": current_score.get("agent_gate"),
+                    },
+                }
+            )
 
-        _emit(
-            event_hook,
-            "stage_completed",
-            {
-                "stage": "enrich_signals",
-                "stop_reason": stop_reason,
-                "used_enrichment_steps": len(iterations),
-                "used_tool_calls": total_tool_calls,
-            },
-        )
+            stop, stop_hint = _should_stop_early(current_score, score_history)
+            if stop:
+                stop_reason = str(stop_hint or "early_stop")
+            elif not current_score.get("agent_gate", {}).get("invoke_agent", True):
+                stop_reason = "confidence_gate_satisfied"
+
+        # Phase C: adaptive deterministic enrichment after semantic context.
+        while stop_reason == "enrichment_completed":
+            if len(iterations) >= budget.max_enrichment_steps:
+                stop_reason = "max_enrichment_steps_reached"
+                break
+            if total_tool_calls >= budget.max_tool_calls:
+                stop_reason = "tool_call_budget_reached"
+                break
+            if not current_score.get("agent_gate", {}).get("invoke_agent", True):
+                stop_reason = "confidence_gate_satisfied"
+                break
+
+            unknown_signals = _unknown_nondeterministic_signals(current_signals)
+            candidate_tools = _required_tools_for_unknown_signals(unknown_signals, signal_nondet_rules)
+            if not candidate_tools:
+                stop_reason = "no_enrichment_candidates"
+                break
+
+            next_tool = _select_next_tool_alias(
+                candidate_tools=candidate_tools,
+                completed_tools=completed_tools,
+                envelope=envelope,
+                signals_doc=current_signals,
+                scoring_cfg=scoring_cfg,
+                presemantic_phase=False,
+            )
+            if not next_tool:
+                stop_reason = "no_enrichment_candidates"
+                break
+
+            evidence_count, _has_updates = _execute_enrichment_iteration(
+                tool_alias=next_tool,
+                phase="adaptive_enrichment",
+                evidence_counter=evidence_counter,
+            )
+            evidence_counter += evidence_count
+            completed_tools.add(next_tool)
+
+            stop, stop_hint = _should_stop_early(current_score, score_history)
+            if stop:
+                stop_reason = str(stop_hint or "early_stop")
+                break
+            if not current_score.get("agent_gate", {}).get("invoke_agent", True):
+                stop_reason = "confidence_gate_satisfied"
+                break
+
+    (out / "evidence.controlled.json").write_text(json.dumps(controlled_evidence, indent=2) + "\n", encoding="utf-8")
+    (out / "semantic_assessment.json").write_text(json.dumps(semantic_doc, indent=2) + "\n", encoding="utf-8")
+    _emit(
+        event_hook,
+        "stage_completed",
+        {
+            "stage": "enrich_signals",
+            "stop_reason": stop_reason,
+            "used_enrichment_steps": len(iterations),
+            "used_tool_calls": total_tool_calls,
+        },
+    )
+
+    threat_tag_doc = derive_threat_tags(envelope=envelope, signals_doc=current_signals, score_doc=current_score)
+    current_score = {
+        **current_score,
+        "primary_threat_tag": threat_tag_doc.get("primary_threat_tag"),
+        "threat_tags": threat_tag_doc.get("threat_tags", []),
+    }
 
     # 4) Final report
     _emit(event_hook, "stage_started", {"stage": "final_report"})
